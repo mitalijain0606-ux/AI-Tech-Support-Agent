@@ -12,6 +12,11 @@ system (Postgres, Redis, the full 5-stage pipeline, the SDK, a second demo
 app) is designed and scoped, but out of this slice — see
 [What's deferred](#whats-deferred) below.
 
+**For current planning and phase-by-phase tracking, see [`docs/`](docs/)**
+— this README covers the GitHub slice specifically; `docs/plan/` covers
+the overall phased plan (GitHub now, a fake SaaS demo next) and
+`docs/archive/` keeps the original planning documents for reference.
+
 ## Why GitHub, and why this isn't "a real GitHub bug"
 
 GitHub was chosen because it's a real product almost everyone already has an
