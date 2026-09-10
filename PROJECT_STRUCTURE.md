@@ -38,7 +38,7 @@ operon/
 ├── backend/                            # FastAPI — stateless, target-agnostic
 │   ├── pyproject.toml                  # package metadata, deps, ruff + pytest config
 │   ├── requirements.txt                # pinned, for Vercel's Python builder
-│   ├── .env.example                    # GEMINI_API_KEY, GEMINI_MODEL — documented, not committed
+│   ├── .env.example                    # GROQ_API_KEY, GROQ_MODEL — documented, not committed
 │   ├── vercel.json
 │   ├── api/
 │   │   └── index.py                    # entry point Vercel's Python runtime serves
@@ -49,7 +49,7 @@ operon/
 │   │   ├── schemas.py                  # EvidenceBundle + sub-schemas (Contract 1)
 │   │   ├── tripwire.py                 # server-side credential scanner (Contract 1a)
 │   │   ├── policy.py                   # closed action enum + evaluate() (Contract 3)
-│   │   └── llm.py                      # Gemini call: classify + diagnose + plan
+│   │   └── llm.py                      # Groq call: classify + diagnose + plan
 │   └── tests/
 │       ├── conftest.py
 │       ├── test_tripwire.py            # the credential-tripwire test — write this one first

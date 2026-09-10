@@ -30,7 +30,7 @@ a bad deploy). Everything downstream of that is genuine:
   control
 - real cookie metadata (name, domain, expiry — never the value) pulled via
   `chrome.cookies`
-- a real call to Gemini for diagnosis
+- a real call to Groq for diagnosis
 - a real policy-engine gate before anything executes
 - a real `localStorage.removeItem` + reload against the live tab
 - a real re-check of the page afterward to confirm the fix actually worked
@@ -56,7 +56,7 @@ namespaced (`operon_demo_cache`) and is not read or used by GitHub itself.
 4. DIAGNOSE — POST /api/diagnose { message, bundle }
               → server-side tripwire scans the raw payload for anything
                 credential-shaped (should never fire — see below)
-              → Gemini returns { category, root_cause, reasoning,
+              → Groq returns { category, root_cause, reasoning,
                 evidence_ids, confidence, resolvable_automatically,
                 proposed_action }
               → backend rejects any evidence_ids not actually present in
@@ -128,7 +128,7 @@ operon/
 │       ├── schemas.py                  # EvidenceBundle + sub-schemas, Diagnosis, Policy types
 │       ├── tripwire.py                 # Contract 1a layer 3 — server-side credential scanner
 │       ├── policy.py                   # Contract 3 — action enum + evaluate()
-│       └── llm.py                      # Gemini call: classify+diagnose+plan combined (MVP)
+│       └── llm.py                      # Groq call: classify+diagnose+plan combined (MVP)
 │
 └── extension/                          # MV3, plain JS (no bundler), scoped to github.com
     ├── manifest.json                   # host_permissions: github.com only; debugger, cookies,
@@ -151,22 +151,22 @@ Everything under `backend/` except `requirements.txt`, `vercel.json`, and
 cd backend
 pip install -r requirements.txt        # fastapi, httpx, pydantic, uvicorn
 
-export GEMINI_API_KEY="your-google-ai-studio-key"   # required
-export GEMINI_MODEL="gemini-2.0-flash"              # optional, this is the default
+export GROQ_API_KEY="your-groq-key"                       # required
+export GROQ_MODEL="llama-3.3-70b-versatile"               # optional, this is the default
 
-uvicorn app.main:app --reload --port 8000
+uvicorn operon_backend.main:app --reload --port 8000
 curl localhost:8000/health              # {"status": "ok"}
 ```
 
 Deploying is the same `vercel deploy --temporary --yes` flow already used
 elsewhere in this project — no account login required for a claimable
-temporary deployment. `GEMINI_API_KEY` needs to be passed as a runtime env
-var on deploy (`-e GEMINI_API_KEY=...`) or set in the Vercel project once
+temporary deployment. `GROQ_API_KEY` needs to be passed as a runtime env
+var on deploy (`-e GROQ_API_KEY=...`) or set in the Vercel project once
 it's claimed.
 
-**Get a Gemini key:** [Google AI Studio](https://aistudio.google.com/apikey)
+**Get a Groq key:** [console.groq.com/keys](https://console.groq.com/keys)
 — free tier, no card required. This is the one piece I can't provision for
-you since it has to be tied to your own Google account.
+you since it has to be tied to your own account.
 
 ## Extension — setup
 
@@ -204,7 +204,7 @@ Nothing from the earlier planning is dropped — it's sequenced, not cut:
   it, which is simpler and avoids a database dependency for the first
   working loop.
 - **The full 5-stage pipeline** — this MVP combines classify + diagnose +
-  plan into one Gemini call for speed. Splitting them into five separate,
+  plan into one Groq call for speed. Splitting them into five separate,
   independently-scored stages (per the full build plan) is the next step
   once this path is proven.
 - **`SdkProvider` / `packages/operon-core`** — there's no SDK yet, so there's
