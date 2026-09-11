@@ -189,23 +189,43 @@ async function collectEvidence(tab: chrome.tabs.Tab): Promise<EvidenceBundle> {
   };
 }
 
-// ---- Backend calls ---------------------------------------------------------
+// ---- Backend calls — SupportSession API (AGENT_ARCHITECTURE.md Phase 1) --
+//
+// The backend now owns a persisted, stateful session for every report —
+// see backend/operon_backend/session_service.py. This extension no longer
+// carries the diagnosis/policy result as the only record of what
+// happened; it drives the same session forward one step at a time and the
+// backend logs every transition.
 
-async function callDiagnose(message: string, bundle: EvidenceBundle): Promise<Diagnosis> {
-  const res = await fetch(`${BACKEND_URL}/api/diagnose`, {
+let currentSessionId: string | null = null;
+
+async function createBackendSession(userIssue: string): Promise<string> {
+  const res = await fetch(`${BACKEND_URL}/api/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, bundle }),
+    body: JSON.stringify({ user_issue: userIssue, source: "github" }),
+  });
+  if (!res.ok) throw new Error(`Could not start a session (${res.status})`);
+  const body = await res.json();
+  return body.session_id as string;
+}
+
+async function callDiagnose(sessionId: string, bundle: EvidenceBundle): Promise<Diagnosis> {
+  const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionId}/diagnose`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bundle }),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.detail ?? `Diagnosis request failed (${res.status})`);
   }
-  return res.json();
+  const body = await res.json();
+  return body.diagnosis as Diagnosis;
 }
 
-async function callPolicy(action: ProposedAction): Promise<PolicyDecision> {
-  const res = await fetch(`${BACKEND_URL}/api/policy`, {
+async function callPolicy(sessionId: string, action: ProposedAction): Promise<PolicyDecision> {
+  const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionId}/policy`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -215,7 +235,32 @@ async function callPolicy(action: ProposedAction): Promise<PolicyDecision> {
     }),
   });
   if (!res.ok) throw new Error(`Policy request failed (${res.status})`);
-  return res.json();
+  const body = await res.json();
+  return body.policy as PolicyDecision;
+}
+
+async function recordApproval(sessionId: string, approved: boolean): Promise<void> {
+  await fetch(`${BACKEND_URL}/api/sessions/${sessionId}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approved }),
+  });
+}
+
+async function recordActionResult(sessionId: string, succeeded: boolean, detail: string): Promise<void> {
+  await fetch(`${BACKEND_URL}/api/sessions/${sessionId}/action-result`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ succeeded, detail }),
+  });
+}
+
+async function recordVerification(sessionId: string, passed: boolean, message: string): Promise<void> {
+  await fetch(`${BACKEND_URL}/api/sessions/${sessionId}/verify`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ passed, message }),
+  });
 }
 
 // ---- Action execution + verification --------------------------------------
@@ -233,13 +278,17 @@ function reloadTab(tabId: number): Promise<void> {
   });
 }
 
-async function executeAndVerify(tab: chrome.tabs.Tab, diagnosis: Diagnosis, policy: PolicyDecision) {
+async function executeAndVerify(sessionId: string, tab: chrome.tabs.Tab, diagnosis: Diagnosis, policy: PolicyDecision) {
   setState({ phase: "executing", diagnosis, policy });
 
   if (policy.action_id === "clear_storage_key") {
     const key = policy.validated_params.key as string;
     await sendToContent(tab.id!, { type: "CLEAR_STORAGE_KEY", key });
+    await recordActionResult(sessionId, true, `cleared storage key '${key}'`);
   } else if (policy.action_id !== "reload" && policy.action_id !== "inspect_page") {
+    // Unreachable today — PROVIDER_CAPABILITIES only declares actions
+    // handled above, so the Policy Engine denies anything else before
+    // execution is ever reached. Left in place as a defensive backstop.
     setState({
       phase: "escalated",
       diagnosis,
@@ -247,6 +296,8 @@ async function executeAndVerify(tab: chrome.tabs.Tab, diagnosis: Diagnosis, poli
       message: `Action '${policy.action_id}' isn't implemented by this provider yet.`,
     });
     return;
+  } else {
+    await recordActionResult(sessionId, true, `no-op action '${policy.action_id}'`);
   }
 
   await reloadTab(tab.id!);
@@ -254,11 +305,15 @@ async function executeAndVerify(tab: chrome.tabs.Tab, diagnosis: Diagnosis, poli
 
   const check = await sendToContent(tab.id!, { type: "CHECK_STORAGE" });
   const stillBroken = check.storage?.parse_status === "syntax_error";
+  const message = stillBroken
+    ? "Verification failed — the issue is still present."
+    : "Verified — the page initializes cleanly now.";
+  await recordVerification(sessionId, !stillBroken, message);
 
   if (stillBroken) {
-    setState({ phase: "error", diagnosis, policy, message: "Verification failed — the issue is still present." });
+    setState({ phase: "error", diagnosis, policy, message });
   } else {
-    setState({ phase: "resolved", diagnosis, policy, message: "Verified — the page initializes cleanly now." });
+    setState({ phase: "resolved", diagnosis, policy, message });
   }
 }
 
@@ -280,17 +335,20 @@ async function handleCommand(command: PopupCommand) {
     case "RESET": {
       const tab = await getActiveTab();
       await sendToContent(tab.id!, { type: "RESET_STORAGE" });
+      currentSessionId = null;
       setState({ phase: "idle" });
       return;
     }
 
     case "ASK_OPERON": {
       const tab = await getActiveTab();
+      currentSessionId = await createBackendSession(command.message);
+
       setState({ phase: "collecting" });
       const bundle = await collectEvidence(tab);
 
       setState({ phase: "diagnosing" });
-      const diagnosis = await callDiagnose(command.message, bundle);
+      const diagnosis = await callDiagnose(currentSessionId, bundle);
 
       if (!diagnosis.proposed_action) {
         setState({
@@ -301,26 +359,29 @@ async function handleCommand(command: PopupCommand) {
         return;
       }
 
-      const policy = await callPolicy(diagnosis.proposed_action);
+      const policy = await callPolicy(currentSessionId, diagnosis.proposed_action);
 
       if (policy.decision === "DENY") {
         setState({ phase: "escalated", diagnosis, policy, message: policy.reason });
       } else if (policy.decision === "REQUIRE_APPROVAL") {
         setState({ phase: "awaiting_approval", diagnosis, policy });
       } else {
-        await executeAndVerify(tab, diagnosis, policy);
+        await executeAndVerify(currentSessionId, tab, diagnosis, policy);
       }
       return;
     }
 
     case "APPROVE": {
-      if (state.phase !== "awaiting_approval" || !state.diagnosis || !state.policy) return;
+      if (state.phase !== "awaiting_approval" || !state.diagnosis || !state.policy || !currentSessionId) return;
       const tab = await getActiveTab();
-      await executeAndVerify(tab, state.diagnosis, state.policy);
+      await recordApproval(currentSessionId, true);
+      await executeAndVerify(currentSessionId, tab, state.diagnosis, state.policy);
       return;
     }
 
     case "DENY":
+      if (currentSessionId) await recordApproval(currentSessionId, false);
+      currentSessionId = null;
       setState({ phase: "idle" });
       return;
   }

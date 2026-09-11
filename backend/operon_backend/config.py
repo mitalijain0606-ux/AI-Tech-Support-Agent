@@ -7,5 +7,9 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     groq_model: str = "openai/gpt-oss-120b"
 
+    # SQLite by default so this runs with zero external accounts. Point this
+    # at a real Postgres/Neon URL later — the ORM code doesn't change.
+    database_url: str = "sqlite:///./operon.db"
+
 
 settings = Settings()

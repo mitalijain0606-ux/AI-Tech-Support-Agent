@@ -98,3 +98,49 @@ class PolicyDecision(BaseModel):
     decision: str  # "ALLOW" | "REQUIRE_APPROVAL" | "DENY"
     reason: str
     validated_params: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---- SupportSession API — AGENT_ARCHITECTURE.md Phase 1 --------------------
+
+
+class CreateSessionRequest(BaseModel):
+    user_issue: str
+    source: str = "github"
+
+
+class SubmitEvidenceRequest(BaseModel):
+    bundle: EvidenceBundle
+
+
+class ApprovalRequest(BaseModel):
+    approved: bool
+
+
+class ActionResultRequest(BaseModel):
+    succeeded: bool
+    detail: str = ""
+
+
+class VerifyRequest(BaseModel):
+    passed: bool
+    message: str = ""
+
+
+class SessionOut(BaseModel):
+    session_id: str
+    phase: str
+    user_issue: str
+    issue_category: str | None = None
+    hypotheses: list[dict[str, Any]] = Field(default_factory=list)
+    current_hypothesis_id: str | None = None
+    pending_action: dict[str, Any] | None = None
+    verification_state: dict[str, Any] | None = None
+    resolution_state: str | None = None
+    confidence: float = 0.0
+    phase_history: list[dict[str, Any]] = Field(default_factory=list)
+    diagnostic_steps: list[dict[str, Any]] = Field(default_factory=list)
+    attempted_actions: list[dict[str, Any]] = Field(default_factory=list)
+    step_count: int = 0
+    tool_call_count: int = 0
+    llm_call_count: int = 0
+    action_attempt_count: int = 0

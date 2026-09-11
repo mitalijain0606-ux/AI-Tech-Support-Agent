@@ -8,6 +8,7 @@ dependencies = [
     "httpx",
     "pydantic",
     "pydantic-settings",
+    "sqlalchemy",
 ]
 
 [project.optional-dependencies]
@@ -18,6 +19,11 @@ include = ["operon_backend*"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
+# B008: FastAPI's Depends(...) in a default argument is the framework's
+# documented dependency-injection idiom, not the footgun this rule assumes.
+ignore = ["B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
