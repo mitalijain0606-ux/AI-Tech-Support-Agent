@@ -51,9 +51,14 @@ function sendToContent(tabId: number, message: ContentRequest): Promise<ContentR
   return new Promise((resolve, reject) => {
     chrome.tabs.sendMessage(tabId, message, (response: ContentResponse) => {
       if (chrome.runtime.lastError) {
+        // The most common cause by far: the extension was reloaded after
+        // this tab was already open, so the tab is still running the old,
+        // now-disconnected content script instance. Reloading the target
+        // tab (not the extension) re-injects it and fixes this.
         reject(
           new Error(
-            `Couldn't reach this tab (${chrome.runtime.lastError.message}). Make sure you're on the target site.`,
+            `Couldn't reach this tab (${chrome.runtime.lastError.message}). ` +
+              `If you just reloaded the extension, reload this tab too — it's likely running a stale content script.`,
           ),
         );
         return;
