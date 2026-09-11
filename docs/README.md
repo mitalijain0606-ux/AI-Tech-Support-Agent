@@ -19,10 +19,13 @@ Two folders, two different jobs — don't mix content between them.
 1. [`plan/00-overview.md`](plan/00-overview.md) — current architecture,
    in one page.
 2. [`plan/01-phase-1-github.md`](plan/01-phase-1-github.md) — active work.
-3. [`plan/02-phase-2-fake-saas.md`](plan/02-phase-2-fake-saas.md) — next,
+3. [`plan/github-scenarios.md`](plan/github-scenarios.md) — every diagnosable
+   scenario on the `github` target, seeded and real, with evidence
+   signatures. Add new scenarios here.
+4. [`plan/02-phase-2-fake-saas.md`](plan/02-phase-2-fake-saas.md) — next,
    blocked on Phase 1.
-4. [`plan/03-roadmap.md`](plan/03-roadmap.md) — real future work, not active.
-5. `archive/` — only when you want the original reasoning behind something
+5. [`plan/03-roadmap.md`](plan/03-roadmap.md) — real future work, not active.
+6. `archive/` — only when you want the original reasoning behind something
    in the roadmap.
 
 ## Status tracking
