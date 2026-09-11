@@ -34,15 +34,15 @@ for us — same as any healthy production app).
 
 - [x] **M1 — Repo scaffolded.** `backend/` and `extension/` boilerplate
   created and pushed to `main`. No logic yet.
-- [ ] **M2 — EvidenceBundle + tripwire.** `operon_backend/schemas.py`
+- [x] **M2 — EvidenceBundle + tripwire.** `operon_backend/schemas.py`
   filled in for real; `operon_backend/tripwire.py` scans raw payloads for
   JWT-shaped strings, `Bearer` headers, long hex strings. `tests/test_tripwire.py`
   passes with a fake JWT rejected.
-- [ ] **M3 — Policy engine.** `operon_backend/policy.py` implements the
+- [x] **M3 — Policy engine.** `operon_backend/policy.py` implements the
   closed action enum + `evaluate()` → ALLOW / REQUIRE_APPROVAL / DENY for
   the four in-scope actions. `tests/test_policy.py` covers all four plus
   an out-of-enum action_id (must DENY).
-- [ ] **M4 — Groq diagnosis.** `operon_backend/llm.py` calls Groq with the
+- [x] **M4 — Groq diagnosis.** `operon_backend/llm.py` calls Groq with the
   evidence summary + user message, returns a structured diagnosis. Backend
   rejects any `evidence_ids` not actually present in the submitted bundle.
 - [ ] **M5 — Content script.** DOM skeleton + storage-shape reader; seeds
