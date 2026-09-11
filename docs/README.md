@@ -9,23 +9,28 @@ Two folders, two different jobs — don't mix content between them.
 - **[`archive/`](archive/)** — the original planning documents, kept
   verbatim for historical reference. Both are **superseded** by `plan/` in
   places (different demo strategy, different LLM provider, different
-  provider-count, no Postgres/Redis yet) — they're kept because the
-  reasoning behind long-term ideas (RAG, Playwright, multi-tenant, the full
-  12-bug catalogue) is still useful when we get there, not because they're
-  still accurate top to bottom.
+  provider-count) — they're kept because the reasoning behind long-term
+  ideas (Playwright, multi-tenant, the full 12-bug catalogue) is still
+  useful when we get there, not because they're still accurate top to
+  bottom.
 
 ## Reading order
 
 1. [`plan/00-overview.md`](plan/00-overview.md) — current architecture,
    in one page.
-2. [`plan/01-phase-1-github.md`](plan/01-phase-1-github.md) — active work.
-3. [`plan/github-scenarios.md`](plan/github-scenarios.md) — every diagnosable
+2. [`plan/01-phase-1-github.md`](plan/01-phase-1-github.md) — the stateless
+   MVP that proved the loop works. Done; superseded in scope (not
+   invalidated) by the next doc.
+3. [`plan/production-architecture.md`](plan/production-architecture.md) —
+   active: persistence, RAG, and the real five-stage pipeline, built on
+   top of Phase 1's working loop.
+4. [`plan/github-scenarios.md`](plan/github-scenarios.md) — every diagnosable
    scenario on the `github` target, seeded and real, with evidence
    signatures. Add new scenarios here.
-4. [`plan/02-phase-2-fake-saas.md`](plan/02-phase-2-fake-saas.md) — next,
-   blocked on Phase 1.
-5. [`plan/03-roadmap.md`](plan/03-roadmap.md) — real future work, not active.
-6. `archive/` — only when you want the original reasoning behind something
+5. [`plan/02-phase-2-fake-saas.md`](plan/02-phase-2-fake-saas.md) — next,
+   blocked on the above.
+6. [`plan/03-roadmap.md`](plan/03-roadmap.md) — real future work, not active.
+7. `archive/` — only when you want the original reasoning behind something
    in the roadmap.
 
 ## Status tracking

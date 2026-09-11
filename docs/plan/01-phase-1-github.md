@@ -24,11 +24,14 @@ for us — same as any healthy production app).
   from the target site's backend. Anything requiring an app-specific
   capability (like `refresh_auth`) is out of scope, because GitHub can't
   grant Operon that.
-- **Persistence:** none. The backend is stateless; the extension carries
-  context (the evidence bundle, the diagnosis) between calls.
-- **Pipeline:** one combined Groq call does classify + diagnose + plan.
-  Splitting into five independently-scored stages is roadmap, not this
-  phase.
+- **Persistence:** none in this phase — the backend was stateless, the
+  extension carried context between calls. This was a deliberate
+  simplification to prove the loop worked at all, not a rejection of
+  persistence — see [`production-architecture.md`](production-architecture.md)
+  for the real Postgres/Redis design that supersedes this.
+- **Pipeline:** one combined Groq call did classify + diagnose + plan.
+  The real five (six, counting Retrieve) independently-scored stages are
+  designed in [`production-architecture.md`](production-architecture.md).
 
 ## Milestones
 

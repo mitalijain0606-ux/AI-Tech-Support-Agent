@@ -67,18 +67,24 @@ for the literal file tree — this doc doesn't repeat it.
 |---|---|---|
 | LLM | Gemini | **Groq** |
 | Providers | SDK + Extension + Playwright | **Extension only**, for now |
-| Persistence | Postgres + Redis from Week 1 | **Stateless** — extension carries context between calls |
-| Pipeline | 5 separate LLM calls | **1 combined call** (classify+diagnose+plan) for now |
+| Persistence | Postgres + Redis from Week 1 | Postgres + Redis — see [`production-architecture.md`](production-architecture.md); the stateless MVP in Phase 1 was a deliberate, temporary simplification, not a rejection of this |
+| RAG | Explicitly cut for scope | **Back in** — see [`production-architecture.md`](production-architecture.md) |
+| Pipeline | 5 separate LLM calls | Growing to 5 (6 counting Retrieve) — see [`production-architecture.md`](production-architecture.md); Phase 1 used 1 combined call as a starting point |
 | First demo app | A purpose-built fake SaaS ("Buggy Cloud") | **A real site (GitHub)**, fake SaaS moved to Phase 2 |
 | Extension scope | One extension, broad/shared | **One extension per customer**, built from shared source, locked to one domain |
 
 None of the right-hand column is a rejection of the left — it's
-sequencing. The full picture is still where this is headed; see
-[`03-roadmap.md`](03-roadmap.md) for what's deferred and why.
+sequencing. See [`03-roadmap.md`](03-roadmap.md) for what's still genuinely
+deferred (multi-provider, Playwright, the dashboard) and
+[`production-architecture.md`](production-architecture.md) for what just
+graduated from "deferred" to "designed."
 
 ## Phasing
 
-- **[Phase 1](01-phase-1-github.md)** (active): backend + the `github`
-  target, working end-to-end against real github.com.
-- **[Phase 2](02-phase-2-fake-saas.md)** (blocked on Phase 1): a small
+- **[Phase 1](01-phase-1-github.md)** (done): backend + the `github`
+  target, working end-to-end against real github.com, stateless.
+- **[Production architecture](production-architecture.md)** (active):
+  persistence, RAG, and the real five-stage pipeline, built on top of
+  Phase 1's working loop rather than replacing it.
+- **[Phase 2](02-phase-2-fake-saas.md)** (blocked on the above): a small
   fake SaaS app we control, proving the same core generalizes.

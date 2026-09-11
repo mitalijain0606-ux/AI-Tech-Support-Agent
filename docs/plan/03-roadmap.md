@@ -9,6 +9,10 @@ the project structure confusing before.
 Nothing in this file should be started before Phase 2 is done, unless a
 specific decision changes that.
 
+**Persistence and RAG moved out of this file** — they graduated from
+"someday" to "designed": see
+[`production-architecture.md`](production-architecture.md).
+
 ## SDK provider + `packages/operon-core`
 
 A second `CapabilityProvider` implementation — a JS/TS SDK a customer
@@ -18,22 +22,6 @@ the app's trust boundary). Once this exists, the collector and sanitizer
 logic that's currently just inside `extension/` gets extracted into a
 shared `packages/operon-core` package, imported by both. Not worth
 extracting before there's a second consumer.
-
-## Persistence — Postgres + Redis
-
-`evidence_bundles`, `support_sessions`, `support_tickets` in Postgres
-(Neon, free tier); session state in Redis (Upstash, free tier). The
-backend is deliberately stateless through Phase 1 and Phase 2 — this
-becomes necessary once there's a real multi-user support-dashboard
-product, not before.
-
-## The full five-stage pipeline
-
-Classify → Investigate → Diagnose → Plan → Verify as five separate,
-independently-scored LLM calls (today it's one combined call for speed).
-Splitting them gives per-stage accuracy metrics and lets each prompt be
-tuned independently, at the cost of more LLM calls and more latency per
-session.
 
 ## Evidence budgeting as its own module
 
@@ -63,11 +51,11 @@ of a single lucky demo run.
 A structured report (user message, evidence, diagnosis, attempted actions,
 verification result) handed to a human when the Policy Engine returns
 DENY or confidence is too low, plus a read-only dashboard to browse open
-tickets. Needs the persistence layer above to exist first.
+tickets. Needs the persistence layer from
+[`production-architecture.md`](production-architecture.md) to exist first.
 
 ## Explicitly cut (from the original plan, still cut)
 
-- RAG / knowledge base retrieval
 - A desktop agent (stays a roadmap slide, not a deliverable)
 - Multi-tenant org management
 - A staging environment
