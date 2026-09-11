@@ -45,23 +45,62 @@ for us — same as any healthy production app).
 - [x] **M4 — Groq diagnosis.** `operon_backend/llm.py` calls Groq with the
   evidence summary + user message, returns a structured diagnosis. Backend
   rejects any `evidence_ids` not actually present in the submitted bundle.
-- [ ] **M5 — Content script.** DOM skeleton + storage-shape reader; seeds
-  and reads the demo marker key (`operon_demo_cache`) on github.com.
-- [ ] **M6 — Background service worker.** `chrome.debugger` attach
+- [x] **M5 — Content script.** Storage-shape reader; seeds, checks, and
+  clears the demo marker key (`operon_demo_cache`). DOM skeleton collection
+  was scoped out — the backend's `EvidenceBundle` schema has no `dom` field
+  to receive it, so there was nothing to send it to.
+- [x] **M6 — Background service worker.** `chrome.debugger` attach
   (Network + Runtime domains), `chrome.cookies` metadata (never values),
   evidence assembly into an `EvidenceBundle`, calls the backend, executes
-  an approved action.
-- [ ] **M7 — Popup UI.** Seed bug / Ask Operon / show diagnosis with cited
-  evidence / Approve / re-verify and report the result.
-- [ ] **M8 — Build pipeline.** `extension/scripts/build.mjs` reads
+  an approved action, reloads, re-verifies. Declares only the capabilities
+  actually implemented (`inspect_page`, `reload`, `clear_storage_key`) —
+  `unregister_service_worker` is not yet built, so the Policy Engine denies
+  it automatically rather than needing a special case in the executor.
+- [x] **M7 — Popup UI.** React + Tailwind, monochrome (no color, no
+  gradients). Full state machine: seed/idle → collecting → diagnosing →
+  awaiting approval (diagnosis + cited evidence pills + proposed action) →
+  executing → verifying → resolved/escalated/error.
+- [x] **M8 — Build pipeline.** `extension/scripts/build.mjs` reads
   `targets/github.json`, stamps `manifest.template.json`, bundles the
-  TypeScript, writes `dist/github/` as a loadable unpacked extension.
+  TypeScript with esbuild (minified, production React), compiles Tailwind,
+  writes `dist/github/`. Verified: correct manifest, correctly-scoped
+  `host_permissions`, 150KB popup bundle. Refuses to build `fake-saas` until
+  its target config has a real domain, as designed.
 - [ ] **M9 — End-to-end run, live.** The whole loop, on real github.com,
-  witnessed working start to finish.
+  witnessed working start to finish. **Blocked on manual verification** —
+  see the note below on why this couldn't be automated.
 - [ ] **M10 — Backend deployed.** Vercel deployment with `GROQ_API_KEY`
   set as a runtime env var.
 - [ ] **M11 — Demo rehearsed.** Run through at least twice, ideally with a
   recording, before showing anyone else.
+
+## Known limitation — can't automate loading the extension (2026-09-11)
+
+Chrome's `--load-extension` / `--disable-extensions-except` command-line
+flags no longer load an unpacked extension on this machine's stable Chrome
+(149.0.7827.102) — confirmed with a trivial one-file test extension and
+direct `google-chrome --load-extension=... --remote-debugging-port` (no
+Playwright involved), which shows only Chrome's own built-in component
+extensions in the target list, never the one passed on the command line.
+This matches Chrome's rollout of restrictions on command-line extension
+loading (aimed at automated malware installs) — it does **not** affect the
+normal developer path.
+
+Practical effect: M9 has to be verified manually, the same way you'd
+actually use this day to day —
+
+1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** →
+   select `extension/dist/github/`.
+2. Run the backend locally (`uvicorn operon_backend.main:app --reload`)
+   with a real `GROQ_API_KEY` in `.env`.
+3. Open github.com, open the extension popup, click **Seed demo bug**,
+   describe the problem, **Ask Operon**, **Approve**, and watch it reload
+   and verify.
+
+If a CI step ever needs this automated, look into Puppeteer/Playwright's
+newer extension-testing APIs or a Chrome policy override rather than
+retrying the command-line flags — they were the first thing tried here and
+they're the thing that's actually blocked.
 
 ## Resolved — model + structured output (2026-09-11)
 
