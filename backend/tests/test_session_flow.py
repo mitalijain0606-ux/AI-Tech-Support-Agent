@@ -1,6 +1,10 @@
 from starlette.testclient import TestClient
 
 from operon_backend.config import settings
+from operon_backend.db import SessionLocal
+from operon_backend.db_models import KnowledgeChunk
+from operon_backend.embeddings import embed
+from operon_backend.knowledge import SEED_DOCUMENTS
 from operon_backend.main import app
 
 client = TestClient(app)
@@ -10,6 +14,31 @@ def _create_session(user_issue: str) -> str:
     res = client.post("/api/sessions", json={"user_issue": user_issue})
     assert res.status_code == 200
     return res.json()["session_id"]
+
+
+def _ensure_kb_seeded() -> None:
+    """Idempotent — safe even if test_retrieval.py already seeded these
+    into the same shared test database this run."""
+    db = SessionLocal()
+    try:
+        for doc in SEED_DOCUMENTS:
+            chunk_id = f"kb_{doc.doc_id}"
+            if db.get(KnowledgeChunk, chunk_id):
+                continue
+            content = doc.to_embedding_text()
+            db.add(
+                KnowledgeChunk(
+                    id=chunk_id,
+                    source_type="kb",
+                    source_id=doc.doc_id,
+                    content_text=content,
+                    embedding=embed(content),
+                    chunk_metadata=doc.model_dump(),
+                )
+            )
+        db.commit()
+    finally:
+        db.close()
 
 
 def test_require_approval_path_reaches_resolved():
@@ -152,3 +181,58 @@ def test_operation_out_of_phase_returns_409_not_a_silent_no_op():
 def test_unknown_session_returns_404():
     res = client.get("/api/sessions/does-not-exist")
     assert res.status_code == 404
+
+
+def _knowledge_lookup_reason(session_body: dict) -> str:
+    entry = next(t for t in session_body["phase_history"] if t["to"] == "KNOWLEDGE_LOOKUP")
+    return entry["reason"]
+
+
+def test_corrupted_cache_session_retrieves_its_kb_doc():
+    """The AGENT_ARCHITECTURE.md Phase 2 gate, through the real endpoint:
+    retrieval runs regardless of which diagnose() path (LLM or rule-based)
+    is active, so this stays deterministic without needing a live Groq call."""
+    settings.groq_api_key = ""
+    _ensure_kb_seeded()
+    session_id = _create_session("my dashboard looks corrupted")
+
+    bundle = {
+        "url": "https://github.com",
+        "timestamp": 1726000000.0,
+        "console": [{"id": "ev_001", "level": "error", "text": "SyntaxError: Unexpected token in JSON"}],
+        "storage": [
+            {
+                "id": "ev_002",
+                "key": "operon_demo_cache",
+                "present": True,
+                "parse_status": "syntax_error",
+                "error_message": "Unexpected token",
+            }
+        ],
+    }
+    res = client.post(f"/api/sessions/{session_id}/diagnose", json={"bundle": bundle})
+    assert res.status_code == 200
+    assert "kb_kb_corrupted_cache" in _knowledge_lookup_reason(res.json()["session"])
+
+
+def test_ad_blocker_session_retrieves_its_kb_doc():
+    settings.groq_api_key = ""
+    _ensure_kb_seeded()
+    session_id = _create_session("some content on the page never loaded")
+
+    bundle = {
+        "url": "https://github.com",
+        "timestamp": 1726000000.0,
+        "network": [
+            {
+                "id": "ev_001",
+                "method": "GET",
+                "url": "https://collector.github.com/telemetry",
+                "status": 0,
+                "status_text": "net::ERR_BLOCKED_BY_CLIENT",
+            }
+        ],
+    }
+    res = client.post(f"/api/sessions/{session_id}/diagnose", json={"bundle": bundle})
+    assert res.status_code == 200
+    assert "kb_kb_blocked_by_client" in _knowledge_lookup_reason(res.json()["session"])

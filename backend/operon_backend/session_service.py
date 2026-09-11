@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session as DBSession
 
 from operon_backend.db_models import SessionRecord
+from operon_backend.retrieval import RetrievedChunk
 from operon_backend.schemas import Diagnosis, EvidenceBundle, PolicyDecision
 from operon_backend.state_machine import IllegalTransition, SessionPhase, transition
 
@@ -59,10 +60,23 @@ def _log_step(session: SessionRecord, *, tool: str, reason: str, intent: str, ex
     session.tool_call_count += 1
 
 
-def record_diagnosis(db: DBSession, session: SessionRecord, bundle: EvidenceBundle, diagnosis: Diagnosis) -> SessionRecord:
+def record_diagnosis(
+    db: DBSession,
+    session: SessionRecord,
+    bundle: EvidenceBundle,
+    diagnosis: Diagnosis,
+    retrieved: list[RetrievedChunk] | None = None,
+) -> SessionRecord:
     require_phase(session, SessionPhase.UNDERSTANDING)
 
-    transition(session, SessionPhase.KNOWLEDGE_LOOKUP, "no knowledge base wired yet (Phase 2 of AGENT_ARCHITECTURE.md)")
+    retrieved = retrieved or []
+    if retrieved:
+        summary = ", ".join(f"{r.chunk_id} ({r.score:.2f})" for r in retrieved)
+        lookup_reason = f"found {len(retrieved)} relevant knowledge chunk(s): {summary}"
+    else:
+        lookup_reason = "no knowledge chunk scored above the similarity floor"
+    transition(session, SessionPhase.KNOWLEDGE_LOOKUP, lookup_reason)
+
     transition(session, SessionPhase.INVESTIGATING, "evidence already collected by the extension")
 
     session.collected_evidence = [*session.collected_evidence, bundle.model_dump()]
@@ -97,6 +111,9 @@ def record_diagnosis(db: DBSession, session: SessionRecord, bundle: EvidenceBund
     session.current_hypothesis_id = hypothesis_id
     session.confidence = diagnosis.confidence
     session.issue_category = diagnosis.category
+    # What was actually used, not just what was offered — matches
+    # AGENT_ARCHITECTURE.md's field definition for knowledge_references.
+    session.knowledge_references = diagnosis.knowledge_refs
     session.llm_call_count += 1
 
     transition(session, SessionPhase.HYPOTHESIS_FORMED, f"formed {hypothesis_id} from the diagnosis call")

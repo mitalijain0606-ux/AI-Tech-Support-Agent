@@ -10,6 +10,7 @@ from operon_backend.db import get_db, init_db
 from operon_backend.db_models import SessionRecord
 from operon_backend.llm import LLMError, diagnose
 from operon_backend.policy import evaluate
+from operon_backend.retrieval import build_query, search
 from operon_backend.schemas import (
     ActionResultRequest,
     ApprovalRequest,
@@ -110,6 +111,7 @@ def _serialize(session: SessionRecord) -> SessionOut:
         issue_category=session.issue_category,
         hypotheses=session.hypotheses,
         current_hypothesis_id=session.current_hypothesis_id,
+        knowledge_references=session.knowledge_references,
         pending_action=session.pending_action,
         verification_state=session.verification_state,
         resolution_state=session.resolution_state,
@@ -160,13 +162,19 @@ async def session_diagnose_endpoint(session_id: str, request: Request, db: DBSes
     except (ValidationError, ValueError) as exc:
         return JSONResponse(status_code=422, content={"detail": f"Invalid request body: {exc}"})
 
+    query = build_query(session.user_issue, evidence_req.bundle)
+    retrieved = search(db, query)
+    knowledge_context = [
+        {"chunk_id": r.chunk_id, "content": r.content_text, "score": round(r.score, 3)} for r in retrieved
+    ]
+
     try:
-        diagnosis = await diagnose(session.user_issue, evidence_req.bundle)
+        diagnosis = await diagnose(session.user_issue, evidence_req.bundle, knowledge_context)
     except LLMError as exc:
         return JSONResponse(status_code=400, content={"detail": f"Diagnosis failed: {exc}"})
 
     try:
-        session = record_diagnosis(db, session, evidence_req.bundle, diagnosis)
+        session = record_diagnosis(db, session, evidence_req.bundle, diagnosis, retrieved)
     except IllegalTransition as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 

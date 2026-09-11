@@ -53,3 +53,21 @@ class SessionRecord(Base):
     tool_call_count = Column(Integer, default=0)
     llm_call_count = Column(Integer, default=0)
     action_attempt_count = Column(Integer, default=0)
+
+
+class KnowledgeChunk(Base):
+    """The RAG store from production-architecture.md. `embedding` is a
+    plain JSON float list for now — similarity is computed in Python
+    (embeddings.py), not in the database. Moving to real Postgres +
+    pgvector later is a column-type change and a query change, not a
+    reshape of this table or of what gets embedded."""
+
+    __tablename__ = "knowledge_chunks"
+
+    id = Column(String, primary_key=True)
+    source_type = Column(String, nullable=False)  # "kb" | "history"
+    source_id = Column(String, nullable=False)
+    content_text = Column(String, nullable=False)
+    embedding = Column(MutableList.as_mutable(JSON), nullable=False)
+    chunk_metadata = Column(MutableDict.as_mutable(JSON), default=dict)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))

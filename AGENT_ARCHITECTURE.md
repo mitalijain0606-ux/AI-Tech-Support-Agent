@@ -455,12 +455,19 @@ Large enough to need sequencing, same reasoning as the phase docs in
   demo works end to end against a live server with a real Groq call,
   producing a complete 9-entry `phase_history` log
   (`UNDERSTANDING → … → RESOLVED`). 27 backend tests pass.
-- **Phase 2 — Knowledge base + retrieval, wired into `KNOWLEDGE_LOOKUP`.**
-  Restructure `github-scenarios.md` into `KnowledgeDocument`s, seed
-  `knowledge_chunks` (per `production-architecture.md`), make
-  `KNOWLEDGE_LOOKUP` a real state that runs a retrieval call. Gate: the
+- [x] **Phase 2 — Knowledge base + retrieval, wired into `KNOWLEDGE_LOOKUP`.**
+  Done. `knowledge.py` (the two implemented scenarios restructured as
+  `KnowledgeDocument`s), `embeddings.py` (MiniLM via `fastembed` — same
+  model `production-architecture.md` names, no torch dependency),
+  `retrieval.py` (brute-force cosine similarity — fine at this scale, a
+  straight swap to pgvector later without changing the call site),
+  `scripts/seed_kb.py`. `KNOWLEDGE_LOOKUP`'s transition reason is now the
+  real search result, not a placeholder, and `Diagnosis` carries
+  `knowledge_refs` with the same anti-hallucination guardrail as
+  `evidence_ids`. Gate met, verified live against a real Groq call: the
   corrupted-cache and ad-blocker scenarios both retrieve their own KB
-  entry correctly.
+  entry correctly, and the model correctly cited the retrieved chunk in
+  `knowledge_refs`. 32 backend tests pass.
 - **Phase 3 — The bounded loop + hypothesis model.** Replace the linear
   walk with the actual multi-cycle driver, hard limits, and
   `Hypothesis`/`RemediationProposal` models. Gate: a session that starts

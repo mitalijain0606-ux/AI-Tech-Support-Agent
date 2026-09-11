@@ -42,12 +42,25 @@ RULES:
    appears to be blocking requests to this domain and the user should check
    their ad blocker / privacy extension settings for this site, then ask
    again once resolved.
-6. Output strictly valid JSON matching this schema:
+6. You may be given retrieved knowledge chunks (past resolved cases or
+   curated reference documents) under "retrieved_knowledge". These are
+   PRECEDENT, not evidence: they can raise your confidence in an
+   interpretation, but a knowledge_ref can never justify citing an
+   evidence_id that isn't in the current bundle, and can never replace
+   actually finding the pattern in this bundle's own evidence. If a
+   retrieved chunk's recommended action matches what the current evidence
+   supports, cite its id in "knowledge_refs" and prefer that action id
+   over inventing your own reasoning from scratch — reusing a
+   proven-correct approach beats independently re-deriving one. Cite
+   ONLY chunk ids that actually appear in "retrieved_knowledge" — do not
+   invent them, the same rule as evidence_ids.
+7. Output strictly valid JSON matching this schema:
 {
   "category": "storage_corruption" | "auth_failure" | "network_error" | "blocked_by_client" | "dom_error" | "service_worker_stale" | "insufficient_evidence" | "unknown",
   "root_cause": "<concise root cause>",
   "reasoning": "<explanation tying evidence to root cause>",
   "evidence_ids": ["ev_001", ...],
+  "knowledge_refs": ["kb_...", ...],
   "confidence": <float between 0.0 and 1.0>,
   "resolvable_automatically": <boolean>,
   "proposed_action": {
@@ -131,13 +144,21 @@ def _rule_based_diagnosis(message: str, bundle: EvidenceBundle) -> Diagnosis:
     )
 
 
-async def diagnose(message: str, bundle: EvidenceBundle) -> Diagnosis:
+async def diagnose(
+    message: str,
+    bundle: EvidenceBundle,
+    knowledge_context: list[dict] | None = None,
+) -> Diagnosis:
     """
-    Diagnoses an issue from a user message and EvidenceBundle.
-    Uses Groq API if GROQ_API_KEY is set, otherwise falls back to deterministic rule-based diagnosis.
-    Enforces that all cited evidence_ids exist in the bundle.
+    Diagnoses an issue from a user message and EvidenceBundle, optionally
+    augmented with retrieved knowledge chunks (see retrieval.py). Uses Groq
+    API if GROQ_API_KEY is set, otherwise falls back to deterministic
+    rule-based diagnosis (which ignores knowledge_context — it has no LLM
+    to hand precedent to). Enforces that all cited evidence_ids AND
+    knowledge_refs actually exist in what was submitted.
     """
     valid_ids = bundle.all_evidence_ids()
+    valid_knowledge_ids = {k["chunk_id"] for k in (knowledge_context or [])}
 
     if not settings.groq_api_key or settings.groq_api_key.strip() == "":
         return _rule_based_diagnosis(message, bundle)
@@ -148,6 +169,7 @@ async def diagnose(message: str, bundle: EvidenceBundle) -> Diagnosis:
             "user_message": message,
             "evidence": bundle_dict,
             "valid_evidence_ids": list(valid_ids),
+            "retrieved_knowledge": knowledge_context or [],
         },
         indent=2,
     )
@@ -191,6 +213,13 @@ async def diagnose(message: str, bundle: EvidenceBundle) -> Diagnosis:
     if hallucinated_ids:
         raise LLMError(
             f"Diagnosis cited hallucinated evidence IDs not present in bundle: {sorted(hallucinated_ids)}"
+        )
+
+    # Same guardrail, extended to knowledge_refs — precedent can't be invented either.
+    hallucinated_refs = set(diagnosis.knowledge_refs) - valid_knowledge_ids
+    if hallucinated_refs:
+        raise LLMError(
+            f"Diagnosis cited knowledge_refs not present in retrieved_knowledge: {sorted(hallucinated_refs)}"
         )
 
     return diagnosis

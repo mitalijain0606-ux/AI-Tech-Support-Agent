@@ -77,6 +77,10 @@ class Diagnosis(BaseModel):
     root_cause: str
     reasoning: str
     evidence_ids: list[str] = Field(default_factory=list)
+    # Retrieved knowledge chunk ids that informed this diagnosis — precedent,
+    # never a substitute for evidence_ids. See AGENT_ARCHITECTURE.md's
+    # "what retrieval does and does not get to do."
+    knowledge_refs: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     resolvable_automatically: bool
     proposed_action: ProposedAction | None = None
@@ -133,6 +137,7 @@ class SessionOut(BaseModel):
     issue_category: str | None = None
     hypotheses: list[dict[str, Any]] = Field(default_factory=list)
     current_hypothesis_id: str | None = None
+    knowledge_references: list[str] = Field(default_factory=list)
     pending_action: dict[str, Any] | None = None
     verification_state: dict[str, Any] | None = None
     resolution_state: str | None = None
