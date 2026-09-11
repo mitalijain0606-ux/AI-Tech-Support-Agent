@@ -447,12 +447,14 @@ Kept verbatim — these are correct as written and don't need reinterpreting:
 Large enough to need sequencing, same reasoning as the phase docs in
 `docs/plan/`. Each phase is independently shippable and testable.
 
-- **Phase 1 — `SupportSession` + state machine, no loop yet.** Add the
-  Postgres-backed session model and the phase transition table with
-  logging. Wire today's existing single-pass flow through it unchanged
-  (one collect → one diagnose → one propose → policy → execute → verify),
-  just now as explicit named states instead of implicit branches. Gate:
-  the exact current demo still works, now producing a `phase_history` log.
+- [x] **Phase 1 — `SupportSession` + state machine, no loop yet.** Done.
+  `state_machine.py`, `db_models.py`/`db.py` (SQLite for now, Postgres via
+  one env var later), `session_service.py` wiring the existing single-pass
+  flow through named states instead of implicit branches, and
+  session-oriented endpoints in `main.py`. Gate met: the exact current
+  demo works end to end against a live server with a real Groq call,
+  producing a complete 9-entry `phase_history` log
+  (`UNDERSTANDING → … → RESOLVED`). 27 backend tests pass.
 - **Phase 2 — Knowledge base + retrieval, wired into `KNOWLEDGE_LOOKUP`.**
   Restructure `github-scenarios.md` into `KnowledgeDocument`s, seed
   `knowledge_chunks` (per `production-architecture.md`), make
