@@ -42,8 +42,9 @@ def evaluate(
             validated_params={},
         )
 
-    # 2. Check provider capability support
-    if provider_capabilities and action_id not in provider_capabilities:
+    # 2. Check provider capability support. A provider that has declared no
+    # capabilities can do nothing — this must deny, not skip the check.
+    if action_id not in provider_capabilities:
         return PolicyDecision(
             action_id=action_id,
             decision="DENY",

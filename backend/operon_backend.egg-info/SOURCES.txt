@@ -1,0 +1,16 @@
+pyproject.toml
+operon_backend/__init__.py
+operon_backend/config.py
+operon_backend/llm.py
+operon_backend/main.py
+operon_backend/policy.py
+operon_backend/schemas.py
+operon_backend/tripwire.py
+operon_backend.egg-info/PKG-INFO
+operon_backend.egg-info/SOURCES.txt
+operon_backend.egg-info/dependency_links.txt
+operon_backend.egg-info/requires.txt
+operon_backend.egg-info/top_level.txt
+tests/test_llm.py
+tests/test_policy.py
+tests/test_tripwire.py

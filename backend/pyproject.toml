@@ -13,6 +13,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "ruff"]
 
+[tool.setuptools.packages.find]
+include = ["operon_backend*"]
+
 [tool.ruff]
 line-length = 100
 

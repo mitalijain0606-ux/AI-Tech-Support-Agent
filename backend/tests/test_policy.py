@@ -59,6 +59,19 @@ def test_policy_denies_unsupported_capability():
     assert "not supported by the capability provider" in decision.reason
 
 
+def test_policy_denies_when_no_capabilities_declared():
+    # A provider that has declared zero capabilities can do nothing — this
+    # must DENY, not silently skip the capability check because the list
+    # happens to be empty.
+    decision = evaluate(
+        action_id="clear_storage_key",
+        params={"key": "operon_demo_cache"},
+        provider_capabilities=[],
+    )
+    assert decision.decision == "DENY"
+    assert "not supported by the capability provider" in decision.reason
+
+
 def test_policy_denies_unknown_actions():
     decision = evaluate(
         action_id="drop_database",
