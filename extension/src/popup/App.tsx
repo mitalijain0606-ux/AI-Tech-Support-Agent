@@ -144,9 +144,14 @@ export function App() {
         )}
 
         {busy && (
-          <div className="flex h-[188px] flex-col items-center justify-center gap-3">
+          <div className="flex h-[188px] flex-col items-center justify-center gap-3 text-center">
             <Dots />
             <p className="text-[12.5px] text-neutral-500">{PHASE_LABEL[state.phase]}…</p>
+            {state.phase === "collecting" && (
+              <p className="max-w-[260px] text-[11.5px] text-neutral-400">
+                Watching this tab for a few seconds — if you can, reproduce the issue now.
+              </p>
+            )}
           </div>
         )}
 

@@ -132,7 +132,10 @@ async function collectEvidence(tab: chrome.tabs.Tab): Promise<EvidenceBundle> {
 
   await attachDebugger(tab.id!);
   const storageCheck = await sendToContent(tab.id!, { type: "CHECK_STORAGE" });
-  await sleep(600); // let async console/network debugger events land before we detach
+  // A real investigation window, not a snapshot — this is what gives a
+  // genuine complaint (not just the seeded demo bug) a chance to actually
+  // produce console/network evidence while we're attached and watching.
+  await sleep(4000);
   await detachDebugger(tab.id!);
 
   const hostname = new URL(tab.url!).hostname;
@@ -149,7 +152,11 @@ async function collectEvidence(tab: chrome.tabs.Tab): Promise<EvidenceBundle> {
     // c.value is deliberately never read here — Contract 1a.
   }));
 
-  const storageSignals = storageCheck.storage ? [{ id: newId(), ...storageCheck.storage }] : [];
+  // Only report the demo marker key when it's actually present — an
+  // absent/reset key is not evidence of anything and shouldn't be handed
+  // to the model as if it were a signal for an unrelated complaint.
+  const storageSignals =
+    storageCheck.storage && storageCheck.storage.present ? [{ id: newId(), ...storageCheck.storage }] : [];
 
   return {
     url: tab.url!,
