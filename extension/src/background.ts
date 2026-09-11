@@ -73,7 +73,7 @@ function sendToContent(tabId: number, message: ContentRequest): Promise<ContentR
 let consoleEvents: ConsoleEvidence[] = [];
 let networkEvents: NetworkEvidence[] = [];
 let nextEvidenceId = 1;
-const requestMethods = new Map<string, string>();
+const requestInfo = new Map<string, { method: string; url: string }>();
 
 function newId(): string {
   return `ev_${String(nextEvidenceId++).padStart(3, "0")}`;
@@ -94,16 +94,31 @@ chrome.debugger.onEvent.addListener((_source, method, params) => {
       p.exceptionDetails?.exception?.description ?? p.exceptionDetails?.text ?? "Uncaught exception";
     consoleEvents.push({ id: newId(), level: "error", text });
   } else if (method === "Network.requestWillBeSent") {
-    requestMethods.set(p.requestId, p.request?.method ?? "GET");
+    requestInfo.set(p.requestId, { method: p.request?.method ?? "GET", url: p.request?.url ?? "" });
   } else if (method === "Network.responseReceived") {
     const status: number = p.response?.status ?? 0;
     if (status < 400) return; // evidence budgeting: non-2xx only
     networkEvents.push({
       id: newId(),
-      method: requestMethods.get(p.requestId) ?? "GET",
+      method: requestInfo.get(p.requestId)?.method ?? "GET",
       url: p.response?.url ?? "",
       status,
       status_text: p.response?.statusText,
+    });
+  } else if (method === "Network.loadingFailed") {
+    // A request a real browser-side blocker (ad blocker, privacy extension)
+    // cancelled never gets a response at all, so Network.responseReceived
+    // never fires for it — this is the only place that failure is visible.
+    const errorText: string = p.errorText ?? "";
+    const isClientBlocked = Boolean(p.blockedReason) || /BLOCKED/i.test(errorText);
+    if (!isClientBlocked) return; // evidence budgeting: real client-blocks only, not every cancelled request
+    const info = requestInfo.get(p.requestId);
+    networkEvents.push({
+      id: newId(),
+      method: info?.method ?? "GET",
+      url: info?.url ?? "",
+      status: 0,
+      status_text: errorText || "blocked by client",
     });
   }
 });
@@ -133,7 +148,7 @@ async function collectEvidence(tab: chrome.tabs.Tab): Promise<EvidenceBundle> {
   consoleEvents = [];
   networkEvents = [];
   nextEvidenceId = 1;
-  requestMethods.clear();
+  requestInfo.clear();
 
   await attachDebugger(tab.id!);
   const storageCheck = await sendToContent(tab.id!, { type: "CHECK_STORAGE" });

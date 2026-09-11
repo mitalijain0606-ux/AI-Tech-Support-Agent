@@ -31,9 +31,20 @@ RULES:
    - "unregister_service_worker" (params: {"scope": "<path>"})
    - "inspect_page" (params: {"selector": "<css_selector>"})
    If the issue cannot be resolved by these actions, set proposed_action to null and resolvable_automatically to false.
-5. Output strictly valid JSON matching this schema:
+5. A network entry with status 0 and a status_text mentioning "blocked"
+   (e.g. net::ERR_BLOCKED_BY_CLIENT) means a browser-side content blocker —
+   an ad blocker or privacy extension the user has installed — cancelled
+   that request before it ever reached the network. You have no capability
+   to disable another browser extension, and must never propose one that
+   isn't in the closed action set above to work around this. Set category
+   to "blocked_by_client", resolvable_automatically to false, proposed_action
+   to null, and in reasoning explain plainly that a browser extension
+   appears to be blocking requests to this domain and the user should check
+   their ad blocker / privacy extension settings for this site, then ask
+   again once resolved.
+6. Output strictly valid JSON matching this schema:
 {
-  "category": "storage_corruption" | "auth_failure" | "network_error" | "dom_error" | "service_worker_stale" | "insufficient_evidence" | "unknown",
+  "category": "storage_corruption" | "auth_failure" | "network_error" | "blocked_by_client" | "dom_error" | "service_worker_stale" | "insufficient_evidence" | "unknown",
   "root_cause": "<concise root cause>",
   "reasoning": "<explanation tying evidence to root cause>",
   "evidence_ids": ["ev_001", ...],
