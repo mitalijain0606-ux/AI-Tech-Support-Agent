@@ -63,13 +63,16 @@ for us — same as any healthy production app).
 - [ ] **M11 — Demo rehearsed.** Run through at least twice, ideally with a
   recording, before showing anyone else.
 
-## Open questions / things to confirm before M4
+## Resolved — model + structured output (2026-09-11)
 
-- Confirm `GROQ_MODEL` in `.env.example` (`llama-3.3-70b-versatile`) is
-  still the right pick when we actually wire the call — Groq's available
-  models change; check `console.groq.com` at build time rather than
-  trusting this doc.
-- Confirm Groq's API supports constrained/structured JSON output the way
-  the diagnosis schema needs (equivalent to what Gemini's `responseSchema`
-  gave us) — if not, the prompt needs an explicit "respond with only JSON
-  matching this shape" instruction plus a parse-and-retry loop in `llm.py`.
+- `llama-3.3-70b-versatile` is gone from Groq (confirmed via a live 404
+  `model_not_found` against the real API). Queried `GET
+  /openai/v1/models` with the real key and switched the default to
+  **`openai/gpt-oss-120b`**, which is live on Groq right now. Updated in
+  `.env.example` and `config.py`. Re-verify against `console.groq.com`
+  periodically — this list changes.
+- Groq's `chat/completions` does support `response_format: {"type":
+  "json_object"}`, and a real end-to-end call against the actual
+  `/api/diagnose` endpoint returned clean, schema-valid JSON with correct
+  evidence citations (`ev_001`, `ev_002`) and the expected `clear_storage_key`
+  action — no retry loop needed for now.
