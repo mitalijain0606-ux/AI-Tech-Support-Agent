@@ -27,10 +27,13 @@ Two folders, two different jobs — don't mix content between them.
 4. [`plan/github-scenarios.md`](plan/github-scenarios.md) — every diagnosable
    scenario on the `github` target, seeded and real, with evidence
    signatures. Add new scenarios here.
-5. [`plan/02-phase-2-fake-saas.md`](plan/02-phase-2-fake-saas.md) — next,
+5. [`knowledge-base/`](knowledge-base/README.md) — source-verified GitHub
+   knowledge base and engineering spec for an API-based GitHub agent
+   (a second provider on the same agent spine). Foundation release.
+6. [`plan/02-phase-2-fake-saas.md`](plan/02-phase-2-fake-saas.md) — next,
    blocked on the above.
-6. [`plan/03-roadmap.md`](plan/03-roadmap.md) — real future work, not active.
-7. `archive/` — only when you want the original reasoning behind something
+7. [`plan/03-roadmap.md`](plan/03-roadmap.md) — real future work, not active.
+8. `archive/` — only when you want the original reasoning behind something
    in the roadmap.
 
 ## Status tracking

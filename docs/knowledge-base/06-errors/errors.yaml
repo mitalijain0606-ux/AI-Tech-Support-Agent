@@ -1,0 +1,402 @@
+# Error intelligence — machine-readable seed set.
+# Schema follows the brief's error-entry template. Every entry lists the
+# `sources` (ids from 00-methodology/source-registry.yaml) it is verified
+# against, and `verification_status`:
+#   verified    - each fact in the entry is backed by a listed source
+#   partial     - core signal verified; some fields are Design inferences (marked)
+#   unverified  - kept as a stub so the agent knows the error exists, but
+#                 semantics were NOT confirmed in this release
+# `common_causes` are ordered most-probable first; `distinguish_from`
+# says how to tell this error from its look-alikes — the reason the
+# taxonomy exists at all.
+
+errors:
+  - id: rest.rate_limit.primary
+    name: Primary rate limit exceeded
+    message_patterns: ["API rate limit exceeded"]   # pattern text itself: UNVERIFIED wording
+    http_status: [403, 429]
+    subsystem: api
+    severity: medium
+    verification_status: verified
+    sources: [rest-rate-limits, rest-best-practices]
+    common_causes:
+      - "Request budget for the identity exhausted (5,000/hr PAT; 5,000+/hr App installation; 1,000/hr/repo GITHUB_TOKEN; 60/hr unauthenticated)."
+      - "Many parallel investigations sharing one installation."
+    rare_causes:
+      - "Unauthenticated calls that should have been authenticated (missing/expired token)."
+    distinguish_from:
+      - "rest.rate_limit.secondary: primary has x-ratelimit-remaining == 0."
+      - "rest.403.resource_not_accessible.*: those carry X-Accepted-GitHub-Permissions and never x-ratelimit-remaining == 0."
+    required_evidence: ["status", "x-ratelimit-remaining", "x-ratelimit-reset", "x-ratelimit-resource", "retry-after"]
+    diagnostic_steps:
+      - "Read x-ratelimit-* headers from the failing response (do not spend a call on GET /rate_limit first)."
+      - "Identify which identity/resource bucket (x-ratelimit-resource)."
+    remediation:
+      - "Wait until x-ratelimit-reset (UTC epoch seconds); honour retry-after if present."
+      - "Reduce request volume: ETag conditional GETs, webhooks instead of polling, serialize requests."
+    verification: ["x-ratelimit-remaining > 0 on the next successful response"]
+    rollback: "n/a (no state changed)"
+    retry: "allowed after reset; never before"
+    related_errors: [rest.rate_limit.secondary]
+    github_documentation: ["https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api"]
+
+  - id: rest.rate_limit.secondary
+    name: Secondary rate limit exceeded
+    message_patterns: ["secondary rate limit"]      # per docs the message indicates a secondary limit
+    http_status: [403, 429]
+    subsystem: api
+    severity: medium
+    verification_status: verified
+    sources: [rest-rate-limits, rest-best-practices]
+    common_causes:
+      - "More than 100 concurrent requests, or > 900 REST points/min (writes cost ~5 points)."
+      - "Bursts of content-creating requests (> 80/min or > 500/hr)."
+      - "Mutating requests fired back-to-back (guidance: wait >= 1 s between them)."
+      - "Heavy CPU-time queries (> 90 s CPU per 60 s)."
+    distinguish_from:
+      - "rest.rate_limit.primary: primary sets x-ratelimit-remaining to 0; secondary usually does not."
+      - "Permission 403: no rate-limit signal, has X-Accepted-GitHub-Permissions."
+    required_evidence: ["status", "response body message", "retry-after"]
+    diagnostic_steps:
+      - "Check for retry-after; if absent wait >= 1 minute then exponentially longer."
+      - "Audit recent request pattern: concurrency and write bursts."
+    remediation:
+      - "Serialize requests; queue; add >= 1 s between mutations."
+    verification: ["Next request succeeds without 403/429 after backoff"]
+    rollback: "n/a"
+    retry: "allowed after retry-after / >= 60 s; continuing while limited risks integration ban"
+    related_errors: [rest.rate_limit.primary]
+    github_documentation: ["https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api"]
+
+  - id: rest.403.resource_not_accessible.integration
+    name: Resource not accessible by integration
+    message_patterns: ["Resource not accessible by integration"]
+    http_status: [403]
+    subsystem: auth
+    severity: high
+    verification_status: verified
+    sources: [rest-troubleshooting]
+    common_causes:
+      - "GitHub App / installation lacks the permission the endpoint requires."
+      - "Installation token narrowed with a `permissions` body that omitted it."
+      - "Repository is not in the installation's selected repositories."
+    rare_causes:
+      - "GITHUB_TOKEN in a workflow whose `permissions:` block is too narrow (default mode UNVERIFIED)."
+    distinguish_from:
+      - "Rate limits: no rate-limit signal; the response carries X-Accepted-GitHub-Permissions."
+      - "404: a repo the token can't see returns 404, not this message."
+    required_evidence: ["status", "message", "X-Accepted-GitHub-Permissions", "installation permissions", "token permission scope requested"]
+    diagnostic_steps:
+      - "Read X-Accepted-GitHub-Permissions: comma = ALL required; semicolon-separated groups = ANY ONE group suffices (e.g. `pull_requests=read,contents=read; issues=read,contents=read`)."
+      - "Compare with the installation's granted permissions."
+    remediation:
+      - "Ask the installation owner to grant the missing permission (App settings), or"
+      - "Mint a token with the needed permission if the App already has it, or"
+      - "Downgrade the plan: propose a patch instead of executing."
+    verification: ["Same call succeeds with the corrected identity/permissions"]
+    rollback: "Revoke the newly granted permission if it was only needed temporarily"
+    retry: "not retryable until permissions change"
+    related_errors: [rest.403.resource_not_accessible.pat, rest.404.private_or_missing]
+    github_documentation: ["https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api"]
+
+  - id: rest.403.resource_not_accessible.pat
+    name: Resource not accessible by personal access token
+    message_patterns: ["Resource not accessible by personal access token"]
+    http_status: [403]
+    subsystem: auth
+    severity: high
+    verification_status: verified
+    sources: [rest-troubleshooting]
+    common_causes:
+      - "PAT lacks a required permission/scope."
+      - "Fine-grained PAT limited to specific repositories that exclude this one (fine-grained PAT model UNVERIFIED)."
+    distinguish_from:
+      - "rest.403.resource_not_accessible.integration: same header, but the credential is a PAT, not an App token."
+    required_evidence: ["status", "message", "X-Accepted-GitHub-Permissions"]
+    diagnostic_steps: ["Read X-Accepted-GitHub-Permissions; compare with token permissions."]
+    remediation: ["Regenerate/adjust the PAT with the missing permission (user action)."]
+    verification: ["Call succeeds"]
+    rollback: "n/a"
+    retry: "not retryable until permissions change"
+    related_errors: [rest.403.resource_not_accessible.integration]
+    github_documentation: ["https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api"]
+
+  - id: rest.404.private_or_missing
+    name: 404 Not Found for a resource that exists
+    message_patterns: ["Not Found"]
+    http_status: [404]
+    subsystem: api
+    severity: medium
+    verification_status: verified
+    sources: [rest-troubleshooting, rest-best-practices]
+    common_causes:
+      - "Private resource and the token cannot see it — GitHub returns 404 rather than 403 to avoid confirming existence."
+      - "Token narrowed to selected repositories that exclude it, or expired/revoked."
+      - "Wrong URL: typo, trailing slash, unencoded path parameter (a `/` in a branch name must be %2F), wrong HTTP method."
+    rare_causes:
+      - "Repository renamed/transferred (a 301 normally precedes; follow it)."
+    distinguish_from:
+      - "A genuine 404: cannot be told apart from 'no access' by status alone — check the token's repository access (e.g. list installation repositories) before concluding absence."
+    required_evidence: ["status", "request URL as sent", "token identity", "token repository access"]
+    diagnostic_steps:
+      - "Verify credentials/scopes/permissions for this endpoint; token not expired or revoked."
+      - "Validate URL encoding and method against the docs."
+      - "Do not hammer a 404 endpoint (best-practices rule)."
+    remediation: ["Fix URL/method, or fix access, per findings."]
+    verification: ["Resource returns 200 under the intended identity"]
+    rollback: "n/a"
+    retry: "only after a change in URL/credentials"
+    related_errors: [rest.403.resource_not_accessible.integration]
+    github_documentation: ["https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api"]
+
+  - id: rest.422.validation_failed
+    name: 422 Validation Failed
+    message_patterns: ["Validation Failed"]
+    http_status: [422]
+    subsystem: api
+    severity: medium
+    verification_status: verified
+    sources: [rest-troubleshooting, rest-pulls, rest-contents]
+    common_causes:
+      - "Request body/params invalid; errors[].code one of: missing, missing_field, invalid, already_exists, unprocessable, custom."
+      - "already_exists: e.g. creating something that exists (a PR for the same head/base, a duplicate value for a unique key)."
+      - "The endpoint was 'spammed' (rapid content creation) — documented for create-PR/merge/contents endpoints."
+    distinguish_from:
+      - "Secondary rate limit: that is 403/429; a spam-related 422 is documented on specific content-creating endpoints."
+    required_evidence: ["status", "errors[] array (resource, field, code, message)"]
+    diagnostic_steps: ["Read each errors[] entry; the code says which class of fault."]
+    remediation: ["Correct the offending field; for already_exists, look up the existing resource instead of recreating it; for spam, slow down."]
+    verification: ["Request succeeds / existing resource found and reused"]
+    rollback: "n/a (request rejected)"
+    retry: "only after changing the request (or, for spam, after backing off)"
+    related_errors: [rest.rate_limit.secondary]
+    github_documentation: ["https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api"]
+
+  - id: rest.contents.409_conflict
+    name: Contents API write conflict
+    message_patterns: ["409"]      # body text UNVERIFIED
+    http_status: [409]
+    subsystem: api
+    severity: medium
+    verification_status: partial
+    sources: [rest-contents]
+    common_causes:
+      - "create/update and delete file endpoints called in parallel (documented: must be serial)."
+      - "File changed since the `sha` you hold (stale blob sha on update). [Design inference — documented as 'sha is required when updating'; the exact 409-vs-422 mapping for stale sha is UNVERIFIED]"
+    distinguish_from:
+      - "422: validation/spam or missing committer name/email."
+    required_evidence: ["status", "path", "branch", "sha used", "current blob sha (re-read)"]
+    diagnostic_steps: ["Re-read the file on the branch; compare sha; check whether another writer/agent step is in flight."]
+    remediation: ["Serialize writes; re-read, rebase the change on the current content, retry once."]
+    verification: ["File on branch contains intended change; blob sha advanced"]
+    rollback: "Revert the resulting commit if partially applied"
+    retry: "conditional — only after re-reading state; never blind"
+    related_errors: [rest.422.validation_failed]
+    github_documentation: ["https://docs.github.com/en/rest/repos/contents"]
+
+  - id: rest.pulls.merge_405
+    name: Pull request cannot be merged (405)
+    message_patterns: ["Method Not Allowed"]      # body text UNVERIFIED
+    http_status: [405]
+    subsystem: collab
+    severity: high
+    verification_status: partial
+    sources: [rest-pulls]
+    common_causes:
+      - "Documented as: merge cannot be performed. Typical underlying reasons (branch protection not satisfied, required checks/reviews missing, merge conflict) are Design inferences — read PR mergeability and branch-protection state to find which."
+    distinguish_from:
+      - "409: `sha` was provided and the PR head no longer matches."
+      - "403: forbidden — a permission problem, not a mergeability problem."
+    required_evidence: ["status", "PR mergeable/merge state", "required checks status", "review decision", "branch protection rules"]
+    diagnostic_steps: ["Fetch PR; fetch check runs; fetch reviews; compare with protection rules."]
+    remediation: ["Resolve the blocker (conflict, failing/missing check, missing approval). The agent must NOT bypass protection."]
+    verification: ["PR merged state == true on the base branch"]
+    rollback: "Revert commit on the base branch (high-risk write, needs approval)"
+    retry: "only after the blocker is resolved"
+    related_errors: [rest.pulls.merge_409_sha]
+    github_documentation: ["https://docs.github.com/en/rest/pulls/pulls"]
+
+  - id: rest.pulls.merge_409_sha
+    name: Merge rejected — head changed since analysis (409)
+    message_patterns: ["409"]
+    http_status: [409]
+    subsystem: collab
+    severity: medium
+    verification_status: verified
+    sources: [rest-pulls]
+    common_causes:
+      - "A `sha` was supplied and the PR head no longer matches (someone pushed after the agent analysed the PR)."
+    distinguish_from:
+      - "405: the merge is not permitted at all; 409 means the state you validated is stale."
+    required_evidence: ["sha sent", "current PR head sha"]
+    diagnostic_steps: ["Re-fetch the PR; diff old vs new head."]
+    remediation: ["Re-run analysis/approval against the new head. This is the mechanism that prevents merging unreviewed code — always pass `sha`."]
+    verification: ["Merged commit's parent chain includes the approved head"]
+    rollback: "n/a (nothing merged)"
+    retry: "only after re-analysis and re-approval"
+    related_errors: [rest.pulls.merge_405]
+    github_documentation: ["https://docs.github.com/en/rest/pulls/pulls"]
+
+  - id: rest.timeout.10s
+    name: Request terminated after 10 seconds
+    message_patterns: ["Server Error"]     # REST; GraphQL surfaces 502/504
+    http_status: [500, 502, 504]           # status for REST timeout not stated; GraphQL: 502/504
+    subsystem: api
+    severity: medium
+    verification_status: partial
+    sources: [rest-troubleshooting, graphql-limits]
+    common_causes:
+      - "Request too expensive (huge page sizes, deep GraphQL connections)."
+      - "GitHub-side incident."
+    distinguish_from:
+      - "A timeout does not prove the write did not happen."
+    required_evidence: ["endpoint", "params/query", "elapsed time", "githubstatus.com state"]
+    diagnostic_steps: ["Check githubstatus.com; simplify request; lower per_page."]
+    remediation: ["Reduce work per request; retry idempotent reads; for writes RE-READ STATE before any retry."]
+    verification: ["Read after write shows the intended state exactly once"]
+    rollback: "If duplicated, remove the duplicate"
+    retry: "reads: yes with backoff; writes: only after checking whether the first succeeded"
+    related_errors: []
+    github_documentation: ["https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api"]
+
+  - id: rest.410.version_retired
+    name: API version no longer supported
+    message_patterns: ["Gone"]
+    http_status: [410]
+    subsystem: api
+    severity: high
+    verification_status: verified
+    sources: [rest-api-versions]
+    common_causes:
+      - "Client pinned to an API version past its end-of-support date."
+    distinguish_from:
+      - "A deleted repository/resource: this is a versioning fault visible across many endpoints at once, with earlier Deprecation/Sunset headers."
+    required_evidence: ["X-GitHub-Api-Version sent", "Deprecation/Sunset headers seen earlier"]
+    diagnostic_steps: ["Compare pinned version with the supported list."]
+    remediation: ["Upgrade the pinned version and run the tool-registry contract tests against it."]
+    verification: ["Calls succeed under the new version"]
+    rollback: "n/a"
+    retry: "not retryable on the old version"
+    related_errors: []
+    github_documentation: ["https://docs.github.com/en/rest/about-the-rest-api/api-versions"]
+
+  - id: rest.400.problems_parsing_json
+    name: Problems parsing JSON
+    message_patterns: ["Problems parsing JSON"]
+    http_status: []       # status code not stated in fetched material
+    subsystem: api
+    severity: low
+    verification_status: partial
+    sources: [rest-troubleshooting]
+    common_causes: ["Malformed request body (bad JSON, wrong quoting, unescaped characters)."]
+    distinguish_from: ["422: JSON parsed but values invalid."]
+    required_evidence: ["exact request body sent (credentials scrubbed)"]
+    diagnostic_steps: ["Lint the body with a JSON validator."]
+    remediation: ["Fix serialization in the client."]
+    verification: ["Request accepted"]
+    rollback: "n/a"
+    retry: "after fixing the body"
+    related_errors: [rest.422.validation_failed]
+    github_documentation: ["https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api"]
+
+  - id: rest.user_agent_missing
+    name: Missing User-Agent header
+    message_patterns: []          # wording UNVERIFIED
+    http_status: []
+    subsystem: api
+    severity: low
+    verification_status: partial
+    sources: [rest-troubleshooting]
+    common_causes: ["Client sends no User-Agent; requests are rejected."]
+    distinguish_from: []
+    required_evidence: ["request headers as sent"]
+    diagnostic_steps: ["Inspect outgoing headers."]
+    remediation: ["Set a descriptive User-Agent in the API client."]
+    verification: ["Requests accepted"]
+    rollback: "n/a"
+    retry: "after fixing headers"
+    related_errors: []
+    github_documentation: ["https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api"]
+
+  - id: actions.trigger.path_filter_3000
+    name: Workflow did not run — path filter and 3,000-file diff limit
+    message_patterns: []
+    http_status: []
+    subsystem: actions
+    severity: medium
+    verification_status: verified
+    sources: [actions-troubleshooting]
+    common_causes:
+      - "A push/PR changed more than 3,000 files; diff evaluation covers only the first 3,000, so a matching file beyond that point does not trigger the workflow."
+    distinguish_from:
+      - "Filter simply not matching: count changed files first."
+    required_evidence: ["changed file count", "workflow paths / paths-ignore filters"]
+    diagnostic_steps: ["Count files in the push/PR; check whether matching paths could lie beyond the first 3,000."]
+    remediation: ["Trigger via workflow_dispatch, or restructure the filter/commit size (Design suggestion)."]
+    verification: ["A run exists for the intended commit"]
+    rollback: "n/a"
+    retry: "n/a"
+    related_errors: [actions.token.no_recursive_runs]
+    github_documentation: ["https://docs.github.com/en/actions/how-tos/troubleshoot-workflows"]
+
+  - id: actions.token.no_recursive_runs
+    name: Workflow-created push/PR did not trigger CI
+    message_patterns: []
+    http_status: []
+    subsystem: actions
+    severity: high
+    verification_status: verified
+    sources: [actions-github-token]
+    common_causes:
+      - "The commit/PR/event was created with GITHUB_TOKEN; such events do not create new workflow runs (exceptions: workflow_dispatch, repository_dispatch; pull_request opened/synchronize/reopened create runs in an approval-required state)."
+    distinguish_from:
+      - "Path/branch filters (see actions.trigger.path_filter_3000): check the ACTOR of the triggering event first."
+    required_evidence: ["actor/token type that created the push or PR", "workflow on: triggers"]
+    diagnostic_steps: ["Identify who created the triggering event; check whether it was GITHUB_TOKEN."]
+    remediation:
+      - "Use a GitHub App installation token (or a dispatch event) to create the change if CI must run; approve the pending run if it is in approval-required state."
+    verification: ["A workflow run exists for the head SHA of the created PR/branch"]
+    rollback: "n/a"
+    retry: "n/a"
+    related_errors: [actions.trigger.path_filter_3000]
+    github_documentation: ["https://docs.github.com/en/actions/concepts/security/github_token"]
+
+  - id: actions.gating.billing_blocked
+    name: Jobs blocked by billing or storage limits
+    message_patterns: []
+    http_status: []
+    subsystem: actions
+    severity: high
+    verification_status: partial
+    sources: [actions-troubleshooting]
+    common_causes: ["Billing or storage limits reached; documented as a troubleshooting category with the Actions budget as a mitigation."]
+    distinguish_from: ["Runner unavailable: jobs queue with no runner; billing blocks are reported as errors on the run."]
+    required_evidence: ["run/job annotations or error text", "org billing settings (user-visible)"]
+    diagnostic_steps: ["Read run annotations; check budget settings."]
+    remediation: ["User/org admin action: adjust Actions budget or billing. The agent cannot and should not change billing."]
+    verification: ["A re-run starts jobs"]
+    rollback: "n/a"
+    retry: "after admin fixes billing"
+    related_errors: []
+    github_documentation: ["https://docs.github.com/en/actions/how-tos/troubleshoot-workflows"]
+
+  - id: rest.401.bad_credentials
+    name: 401 Bad credentials
+    message_patterns: ["Bad credentials"]
+    http_status: [401]
+    subsystem: auth
+    severity: high
+    verification_status: unverified
+    sources: []
+    common_causes:
+      - "UNVERIFIED (not confirmed this pass): expired/revoked/malformed token. For an installation token, expiry after 1 hour is documented [src:app-installation-auth], making 'expired installation token' the first hypothesis to test."
+    distinguish_from:
+      - "403 permission errors: a 401 concerns *who you are*, 403 concerns *what you may do* (general HTTP semantics; GitHub-specific behavior UNVERIFIED)."
+    required_evidence: ["token type", "token mint time", "Authorization header scheme used (redacted)"]
+    diagnostic_steps: ["Check token age vs. lifetime; check header scheme (JWT must use Bearer)."]
+    remediation: ["Renew the token once; if it persists, stop and report — do not loop."]
+    verification: ["Authenticated call returns 2xx"]
+    rollback: "n/a"
+    retry: "at most once after renewing credentials"
+    related_errors: []
+    github_documentation: []

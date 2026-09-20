@@ -1,0 +1,290 @@
+# Source registry — every source used in this KB release.
+# accessed: 2026-09-20. extraction: "summarised" means the page was
+# fetched through a tool that returns a model-generated summary, not raw
+# text; see research-methodology.md "Known limits". Numeric limits,
+# header names and permission names must be re-verified against the live
+# page / OpenAPI spec before being enforced in production.
+
+sources:
+  - id: rest-api-versions
+    title: "API Versions — GitHub REST API"
+    url: https://docs.github.com/en/rest/about-the-rest-api/api-versions
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: versioned
+    supports:
+      - "Header `X-GitHub-Api-Version`."
+      - "Supported versions at access time: 2026-03-10 (EOS not scheduled) and 2022-11-28 (EOS 2028-03-10)."
+      - "No header => default 2022-11-28."
+      - "Previous version supported >= 24 months after a new version's release."
+      - "Deprecated versions emit `Deprecation` and `Sunset` headers; after EOS => 410 Gone."
+    caveats: []
+
+  - id: rest-rate-limits
+    title: "Rate limits for the REST API"
+    url: https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: volatile
+    supports:
+      - "Primary: 60/hr unauthenticated; 5,000/hr PAT; 5,000/hr min for App installation (15,000/hr on GHEC; +50/hr per repo beyond 20 repos, cap 12,500 for non-GHEC); GITHUB_TOKEN 1,000/hr/repo (15,000 on GHEC); OAuth-app client credentials 5,000/hr (15,000 GHEC)."
+      - "Headers: x-ratelimit-limit, -remaining, -used, -reset (UTC epoch seconds), -resource."
+      - "GET /rate_limit does not count against primary limit (may count against secondary)."
+      - "Exceeded => 403 or 429; primary: x-ratelimit-remaining is 0."
+      - "Secondary: <=100 concurrent (shared REST+GraphQL); <=900 points/min REST, <=2,000 points/min GraphQL; GET/HEAD/OPTIONS = 1 point, POST/PATCH/PUT/DELETE = 5 points; <=90s CPU per 60s real time (<=60s of it GraphQL); <=80 content-generating requests/min and <=500/hr; <=2,000 OAuth token requests/hr."
+      - "Retry: honour retry-after; else if remaining=0 wait for x-ratelimit-reset; else wait >= 1 minute. Continued requests while limited may get the integration banned."
+    caveats:
+      - "Numbers are volatile. Treat as configuration, not constants."
+      - "Point costs say 'most' endpoints; some cost differently."
+
+  - id: rest-troubleshooting
+    title: "Troubleshooting the REST API"
+    url: https://docs.github.com/en/rest/using-the-rest-api/troubleshooting-the-rest-api
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: stable
+    supports:
+      - "404 is returned instead of 403 for private resources without proper authentication."
+      - "'Resource not accessible by integration' / '...by personal access token' => insufficient permissions; use `X-Accepted-GitHub-Permissions` response header."
+      - "Header format: comma-separated = all required; semicolon-separated = alternatives, e.g. `pull_requests=read,contents=read; issues=read,contents=read`."
+      - "422 'Validation Failed' error codes: missing, missing_field, invalid, already_exists, unprocessable, custom."
+      - "'Problems parsing JSON' for invalid bodies."
+      - "Requests exceeding 10 seconds are terminated with 'Server Error'."
+      - "A valid User-Agent header is required."
+    caveats:
+      - "SAML-enforcement error text was requested but not returned by the fetcher: UNVERIFIED."
+
+  - id: rest-pagination
+    title: "Using pagination in the REST API"
+    url: https://docs.github.com/en/rest/using-the-rest-api/using-pagination-in-the-rest-api
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: stable
+    supports:
+      - "For most endpoints per_page max is 100."
+      - "`link` header with rel=prev|next|last|first; only a subset present depending on position."
+      - "Query params in link URLs differ by endpoint (page, before/after, since)."
+    caveats:
+      - "Default per_page value not stated in the fetched summary: UNVERIFIED (commonly 30 — do not rely on it)."
+
+  - id: rest-best-practices
+    title: "Best practices for using the REST API"
+    url: https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: volatile
+    supports:
+      - "Prefer webhooks over polling; if polling, fixed schedule + conditional requests."
+      - "Make requests serially, not concurrently; use a queue."
+      - "Wait >= 1 second between mutating requests (POST/PATCH/PUT/DELETE)."
+      - "A 304 Not Modified from a conditional request (ETag / if-none-match) does not count against the primary limit when authenticated."
+      - "Follow 301 by updating the URL; follow 302/307 without code changes."
+      - "Do not repeatedly request resources returning 404 without checking authn/authz."
+
+  - id: graphql-limits
+    title: "Rate and query limits for the GraphQL API"
+    url: https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: volatile
+    supports:
+      - "Points/hr: 5,000 user; 10,000 GHEC user; 5,000 per App installation (10,000 GHEC); OAuth app 5,000 (10,000 GHEC); Actions 1,000/repo (15,000 GHEC)."
+      - "Cost: sum requests per unique connection at max limits, divide by 100, round; minimum 1."
+      - "Max 500,000 total nodes per call; `first`/`last` required on connections, 1-100."
+      - "rateLimit fields: limit, remaining, used, resetAt."
+      - "Requests taking >10s terminated with 502 or 504."
+    caveats:
+      - "Note the REST page lists GHEC GITHUB_TOKEN at 15,000 and the GraphQL page lists GHEC user at 10,000 — different resources; do not conflate."
+
+  - id: app-installation-auth
+    title: "Authenticating as a GitHub App installation"
+    url: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: versioned
+    supports:
+      - "POST /app/installations/{installation_id}/access_tokens with `Authorization: Bearer <JWT>`."
+      - "Installation access token expires after 1 hour."
+      - "Body params `repositories` / `repository_ids` (max 500) and `permissions` narrow the token; omitting `permissions` inherits all app permissions."
+      - "Use the token as `Authorization: Bearer <token>` for REST and GraphQL."
+      - "Find installation ids via GET /users/{username}/installation, /repos/{owner}/{repo}/installation, /orgs/{org}/installation, /app/installations."
+
+  - id: app-jwt
+    title: "Generating a JSON Web Token (JWT) for a GitHub App"
+    url: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: versioned
+    supports:
+      - "Claims: iat (recommend 60s in the past for clock drift), exp (no more than 10 minutes in the future), iss (client ID recommended; app ID also accepted)."
+      - "Signed with RS256. Sent as `Authorization: Bearer <JWT>`."
+
+  - id: app-user-token-refresh
+    title: "Refreshing user access tokens"
+    url: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: versioned
+    supports:
+      - "User access token expires after 8 hours; refresh token after 6 months (when expiration is enabled — opt-in/out under the app's Optional Features)."
+      - "POST https://github.com/login/oauth/access_token with client_id, client_secret (unless device flow), grant_type=refresh_token, refresh_token."
+      - "Refresh tokens are single use: using one invalidates it and the old access token."
+    caveats:
+      - "No explicit error string for an expired refresh token in the fetched summary; recovery is to re-run web/device flow."
+
+  - id: apps-vs-oauth
+    title: "Deciding when to build a GitHub App"
+    url: https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/deciding-when-to-build-a-github-app
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: stable
+    supports:
+      - "GitHub Apps: fine-grained permissions, short-lived tokens, per-repository install selection, scaling rate limits, built-in webhooks. GitHub's stated recommendation: Apps are preferred over OAuth apps."
+
+  - id: webhook-validation
+    title: "Validating webhook deliveries"
+    url: https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: stable
+    supports:
+      - "Header `X-Hub-Signature-256` (HMAC-SHA256, value begins `sha256=`); legacy `X-Hub-Signature` (HMAC-SHA1) for backward compatibility only."
+      - "Compute HMAC over the raw payload with the webhook secret; compare in constant time (never ==); handle payload as UTF-8."
+      - "Doc test vector: secret \"It's a Secret to Everybody\", payload \"Hello, World!\" => sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17 (independently reproduced in this KB build with Python hmac/hashlib)."
+
+  - id: webhook-best-practices
+    title: "Best practices for using webhooks"
+    url: https://docs.github.com/en/webhooks/using-webhooks/best-practices-for-using-webhooks
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: volatile
+    supports:
+      - "Respond 2XX within 10 seconds."
+      - "Process asynchronously via a queue."
+      - "Headers: X-GitHub-Event, X-GitHub-Delivery (unique per event; identical on redelivery), X-GitHub-Hook-ID."
+      - "Use X-GitHub-Delivery to prevent duplicate processing/replay."
+      - "GET /meta returns GitHub's IP ranges; refresh periodically."
+    caveats:
+      - "No ordering guarantee is stated anywhere in the fetched material — the KB treats ordering as NOT guaranteed (design assumption, see 04-webhooks)."
+      - "No payload size cap stated in the fetched summary: UNVERIFIED."
+
+  - id: actions-debug-logging
+    title: "Enabling debug logging"
+    url: https://docs.github.com/en/actions/how-tos/monitor-workflows/enable-debug-logging
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: stable
+    supports:
+      - "ACTIONS_RUNNER_DEBUG=true (runner diagnostic logs: runner process + worker process log files, in a `runner-diagnostic-logs` folder in the downloaded archive) and ACTIONS_STEP_DEBUG=true (verbose step logs). If both a secret and a variable exist, the secret wins."
+      - "Anyone able to run a workflow can enable both for a re-run."
+
+  - id: actions-troubleshooting
+    title: "Troubleshooting workflows"
+    url: https://docs.github.com/en/actions/how-tos/troubleshoot-workflows
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: volatile
+    supports:
+      - "Areas: initial suggestions, billing errors, triggers, execution, runners, networking."
+      - "A disabled workflow does not respond to triggers. Some events (e.g. `issues`, `schedule`) only run from the default branch."
+      - "Path-filter diff evaluation is limited to the first 3,000 files; if changed files fall outside the first 3,000 the workflow will not run."
+      - "Runs are skipped when the commit message has a skip annotation, or when the PR has a merge conflict."
+      - "Failing jobs: download log archive, open `JOB-NAME/system.txt`, look for Evaluating / Expanded / Result lines."
+      - "Extra verbosity: tool flags (`npm install --verbose`), `GIT_TRACE=1 GIT_CURL_VERBOSE=1 git`."
+      - "Avoid duplicate self-hosted runner labels. An Actions budget can unblock billing/storage-blocked workflows."
+    caveats:
+      - "YAML syntax errors are not covered on this page (defers to the workflow-syntax reference)."
+
+  - id: actions-github-token
+    title: "GITHUB_TOKEN (concepts)"
+    url: https://docs.github.com/en/actions/concepts/security/github_token
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: volatile
+    supports:
+      - "Max lifetime: GitHub-hosted runners up to 6 hours (max job time); self-hosted: job limit 5 days but the token can be refreshed only up to 24 hours."
+      - "Events triggered by GITHUB_TOKEN do not create new workflow runs, except workflow_dispatch and repository_dispatch (always create runs); pull_request opened/synchronize/reopened create runs in an approval-required state."
+    caveats:
+      - "Default permissions (permissive vs restricted) and the full scope table were NOT returned: UNVERIFIED."
+
+  - id: rest-workflow-runs
+    title: "REST API endpoints for workflow runs"
+    url: https://docs.github.com/en/rest/actions/workflow-runs
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: versioned
+    supports:
+      - "List runs (returns up to 1,000 results), get run, download logs (302 redirect; link expires after 1 minute), delete logs (204), re-run (201), re-run failed jobs (201, includes dependent jobs), cancel (202), force-cancel (202, bypasses `always()`), delete run (204), attempts, approvals, pending_deployments, run timing (marked deprecated)."
+      - "POST /repos/{owner}/{repo}/actions/jobs/{job_id}/rerun (201) re-runs a single job and its dependents."
+    caveats:
+      - "The fetcher rendered 'required permission' as classic 'repo' scope. Fine-grained/App permission names come from `rest-permissions-apps`, not this source."
+      - "Per-endpoint fine-grained permission sections were not visible to the fetcher on this page (confirmed by a targeted second fetch): UNVERIFIED from this source."
+
+  - id: rest-permissions-apps
+    title: "Permissions required for GitHub Apps"
+    url: https://docs.github.com/en/rest/overview/permissions-required-for-github-apps
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: versioned
+    supports:
+      - "Endpoint -> App permission mapping for Actions, Contents, Pull requests, Issues, Checks, Metadata, Deployments, Administration (see 07-tools/permission-matrix.md)."
+    caveats:
+      - "The fetcher reported the page as TRUNCATED. Treat absence of an endpoint here as 'not checked', not 'no permission needed'."
+      - "'with additional permissions' annotations (Contents PUT/DELETE, Issues PATCH/comments) were not expanded by the fetcher: UNVERIFIED which additional permissions."
+      - "Whether the 'Workflows' permission is required to modify .github/workflows is consistent with the Contents API page ('workflow scope' for classic tokens) but the App-permission name was not directly confirmed: treat as UNVERIFIED."
+
+  - id: rest-contents
+    title: "REST API endpoints for repository contents"
+    url: https://docs.github.com/en/rest/repos/contents
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: versioned
+    supports:
+      - "Create/update file: required `message`, `content` (Base64), and `sha` only when updating; `branch` defaults to default branch. 201 created / 200 updated / 404 / 409 conflict / 422 validation failed or spam detection."
+      - "Delete file: required `message` and `sha`; 200 / 404 / 409 / 422 / 503."
+      - "Classic tokens need `repo` scope; `workflow` scope is also required to modify files in .github/workflows."
+      - "Do NOT call create/update and delete in parallel — concurrent requests conflict; must be serial."
+      - "GET size limits: <=1 MB all features; 1-100 MB raw/object media types only (content field empty, encoding none); >100 MB unsupported."
+
+  - id: rest-pulls
+    title: "REST API endpoints for pull requests"
+    url: https://docs.github.com/en/rest/pulls/pulls
+    authority: 1
+    accessed: 2026-09-20
+    extraction: summarised
+    stability: versioned
+    supports:
+      - "Merge: params merge_method (merge|squash|rebase), sha, commit_title. 200 merged; 403; 404; 405 'Method Not Allowed if merge cannot be performed'; 409 'Conflict if sha was provided and pull request head did not match'; 422 validation failed or endpoint spammed."
+      - "Create PR: 201; 403; 422 validation failed or endpoint spammed."
+
+# Claims this KB relies on that were NOT confirmed against a fetched source
+# in this release. Verify before building on them.
+unverified:
+  - "401 'Bad credentials' semantics and exact body text."
+  - "Classic PAT scopes, fine-grained PAT permission model and expiry limits, deploy key and SSH key behavior."
+  - "Default GITHUB_TOKEN permission mode and full `permissions:` key scope list."
+  - "Default `per_page` value."
+  - "Webhook payload size cap; event ordering guarantees (assumed none)."
+  - "SAML enforcement error strings and SSO authorization behavior."
+  - "Which additional permissions gate Contents PUT/DELETE, Issues PATCH and comment creation for GitHub Apps."
+  - "Fine-grained per-endpoint permission names for every Actions endpoint (only a subset was returned)."
+  - "Workflow log retention period and artifact/cache limits."
+  - "Git-level error strings (push rejected, non-fast-forward, LFS, submodule) — Git documentation not fetched this pass."

@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "ruff"]
+dev = ["pytest", "pytest-asyncio", "ruff", "pyyaml"]
 
 [tool.setuptools.packages.find]
 include = ["operon_backend*"]

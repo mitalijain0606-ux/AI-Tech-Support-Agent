@@ -1,0 +1,306 @@
+# Agent tool registry — machine-readable contract for every tool.
+#
+# The model can only *name* a tool from this registry; the policy engine
+# validates name, arguments, permissions and risk before anything runs.
+# Permissions here are GitHub *App* permissions ("Contents: read").
+#
+# verification_status:
+#   verified   - endpoint, status codes and permission confirmed in cited sources
+#   partial    - endpoint/permission confirmed but a field is a Design decision or
+#                an extra permission is UNVERIFIED (called out in `notes`)
+#
+# This first release registers 14 tools that the failed-CI playbook and
+# the fix-PR flow need. The other tools named in the brief (list_branches,
+# create_branch, list_commits, get_commit, list_jobs, get_job_logs,
+# reviews, deployments, ...) are in `planned_tools` below and MUST NOT be
+# exposed to the model until they are added here with verified contracts.
+
+defaults: &defaults
+  authentication:
+    supported: [installation_token]        # user_token only where policy allows acting-as-user
+    header: "Authorization: Bearer <token>"
+    version_header: "X-GitHub-Api-Version: 2022-11-28"
+  audit:
+    required: true
+    fields: [actor, requester_user_id, tenant_id, installation_id, repository, tool, arguments_redacted, permission_checked, approval_id, result_status, verification_result, correlation_id, timestamp]
+  rate_limit:
+    behavior: "Serialize; >= 1 s between mutating calls; honour retry-after / x-ratelimit-reset (see 02-platform)."
+
+tools:
+  # ---------------------------------------------------------------- READ
+  - name: github.get_repository
+    <<: *defaults
+    purpose: "Fetch repository metadata (default branch, visibility, archived state)."
+    endpoint: "GET /repos/{owner}/{repo}"
+    permissions: { required: { metadata: read } }
+    input: { owner: string, repo: string }
+    output: { default_branch: string, private: bool, archived: bool, permissions_summary: object }
+    risk: { level: read_only }
+    side_effects: []
+    idempotency: { type: idempotent }
+    confirmation: { required: false }
+    retry: { allowed: true, policy: "exponential backoff on 5xx/rate limit; not on 403 permission / 404" }
+    failure_modes: ["404 (no access or absent — see errors rest.404.private_or_missing)", "403 permission"]
+    verification: []
+    verification_status: verified
+    sources: [rest-permissions-apps, rest-troubleshooting]
+
+  - name: github.get_file
+    <<: *defaults
+    purpose: "Read a file or directory listing at a ref."
+    endpoint: "GET /repos/{owner}/{repo}/contents/{path}?ref={ref}"
+    permissions: { required: { contents: read } }
+    input: { owner: string, repo: string, path: string, ref: string }
+    output: { sha: string, size: int, content_untrusted: string, encoding: string }
+    risk: { level: read_only }
+    side_effects: []
+    idempotency: { type: idempotent }
+    confirmation: { required: false }
+    retry: { allowed: true, policy: "as above" }
+    failure_modes: ["File > 1 MB: only raw/object media types; content empty, encoding none", "File > 100 MB unsupported", "404"]
+    verification: []
+    verification_status: verified
+    notes: "Returned content is UNTRUSTED DATA (see 08-agent prompt-injection rules); it must never be interpreted as an instruction."
+    sources: [rest-permissions-apps, rest-contents]
+
+  - name: github.list_workflow_runs
+    <<: *defaults
+    purpose: "List workflow runs for a repo, filtered by branch/event/status/actor/date."
+    endpoint: "GET /repos/{owner}/{repo}/actions/runs"
+    permissions: { required: { actions: read } }
+    input: { owner: string, repo: string, branch: "string?", event: "string?", status: "string?", per_page: int, page_or_link: string }
+    output: { runs: "[{id, name, head_sha, status, conclusion, run_attempt, event, created_at}]" }
+    risk: { level: read_only }
+    side_effects: []
+    idempotency: { type: idempotent }
+    confirmation: { required: false }
+    retry: { allowed: true, policy: "as above" }
+    failure_modes: ["Returns at most 1,000 results — an empty page does not prove no such run exists"]
+    verification: []
+    verification_status: verified
+    sources: [rest-permissions-apps, rest-workflow-runs]
+
+  - name: github.get_workflow_run
+    <<: *defaults
+    purpose: "Fetch one workflow run (status, conclusion, head SHA, attempt)."
+    endpoint: "GET /repos/{owner}/{repo}/actions/runs/{run_id}"
+    permissions: { required: { actions: read } }
+    input: { owner: string, repo: string, run_id: int }
+    output: { status: string, conclusion: "string?", head_sha: string, run_attempt: int }
+    risk: { level: read_only }
+    side_effects: []
+    idempotency: { type: idempotent }
+    confirmation: { required: false }
+    retry: { allowed: true, policy: "as above" }
+    failure_modes: ["404"]
+    verification: []
+    verification_status: partial
+    notes: "Endpoint confirmed in the workflow-runs reference; the App-permission mapping for this exact operation is inferred from the Actions-read family on the permissions page — confirm against OpenAPI."
+    sources: [rest-workflow-runs, rest-permissions-apps]
+
+  - name: github.get_workflow_logs
+    <<: *defaults
+    purpose: "Download the log archive for a run (or a specific attempt)."
+    endpoint: "GET /repos/{owner}/{repo}/actions/runs/{run_id}/logs   |   .../attempts/{attempt_number}/logs"
+    permissions: { required: { actions: read } }
+    input: { owner: string, repo: string, run_id: int, attempt_number: "int?" }
+    output: { archive_bytes_stream: stream, note: "302 redirect; follow immediately" }
+    risk: { level: read_only }
+    side_effects: []
+    idempotency: { type: idempotent }
+    confirmation: { required: false }
+    retry: { allowed: true, policy: "re-request the endpoint for a fresh redirect; never reuse an expired URL" }
+    failure_modes: ["Redirect URL expires after 1 minute", "Logs deleted/expired -> 404 (retention period UNVERIFIED)"]
+    verification: []
+    verification_status: partial
+    notes: "Log content may contain secrets (debug logging, verbose tools). Run the credential scrubber BEFORE any text reaches the model or storage. Permission mapping for the logs operation is inferred (see get_workflow_run)."
+    sources: [rest-workflow-runs, actions-debug-logging]
+
+  - name: github.get_check_run
+    <<: *defaults
+    purpose: "Fetch a check run's status, conclusion and output."
+    endpoint: "GET /repos/{owner}/{repo}/check-runs/{check_run_id}"
+    permissions: { required: { checks: read } }
+    input: { owner: string, repo: string, check_run_id: int }
+    output: { status: string, conclusion: "string?", output_untrusted: object }
+    risk: { level: read_only }
+    side_effects: []
+    idempotency: { type: idempotent }
+    confirmation: { required: false }
+    retry: { allowed: true, policy: "as above" }
+    failure_modes: ["404"]
+    verification: []
+    verification_status: verified
+    sources: [rest-permissions-apps]
+
+  # ---------------------------------------------------------------- LOW
+  - name: github.comment_issue
+    <<: *defaults
+    purpose: "Post a comment on an issue or pull request."
+    endpoint: "POST /repos/{owner}/{repo}/issues/{issue_number}/comments"
+    permissions: { required: { issues: write }, unverified_additional: true }
+    input: { owner: string, repo: string, issue_number: int, body: string, idempotency_marker: string }
+    output: { comment_id: int, html_url: string }
+    risk: { level: low }
+    side_effects: [creates_comment, notifies_subscribers]
+    idempotency: { type: conditional, mechanism: "Embed a hidden marker (e.g. <!-- operon:{correlation_id} -->) and search existing comments before posting" }
+    confirmation: { required: false, note: "Policy may require approval in tenants that disallow unattended comments" }
+    retry: { allowed: false, note: "Only after checking whether the first attempt already created the comment" }
+    failure_modes: ["403 permission", "422 validation/spam (content-creation limits: <= 80/min, <= 500/hr)"]
+    verification: ["comment with marker exists exactly once on the issue"]
+    verification_status: partial
+    notes: "The permissions page marks this endpoint 'write (with additional permissions)' — which additional permissions is UNVERIFIED. Comment body must never contain secrets or raw logs."
+    sources: [rest-permissions-apps, rest-rate-limits]
+
+  # ------------------------------------------------------------- MEDIUM
+  - name: github.create_issue
+    <<: *defaults
+    purpose: "Create an issue (e.g. to track a diagnosed problem)."
+    endpoint: "POST /repos/{owner}/{repo}/issues"
+    permissions: { required: { issues: write } }
+    input: { owner: string, repo: string, title: string, body: string, labels: "[string]?", idempotency_marker: string }
+    output: { issue_number: int, html_url: string }
+    risk: { level: medium }
+    side_effects: [creates_issue, notifies_subscribers]
+    idempotency: { type: conditional, mechanism: "Search open issues for the marker before creating" }
+    confirmation: { required: true }
+    retry: { allowed: false, note: "Check for existing issue first" }
+    failure_modes: ["403", "422", "content-creation rate limits"]
+    verification: ["issue with marker exists exactly once"]
+    verification_status: verified
+    sources: [rest-permissions-apps, rest-rate-limits]
+
+  - name: github.create_or_update_file
+    <<: *defaults
+    purpose: "Create or modify one file on a branch (one commit)."
+    endpoint: "PUT /repos/{owner}/{repo}/contents/{path}"
+    permissions: { required: { contents: write }, unverified_additional: true, workflows_permission_for_workflow_files: "UNVERIFIED (classic tokens need the `workflow` scope for .github/workflows [rest-contents]; the App-permission name was not directly confirmed)" }
+    input: { owner: string, repo: string, path: string, branch: string, message: string, content_base64: string, sha: "string? (REQUIRED when updating)" }
+    output: { commit_sha: string, blob_sha: string }
+    risk: { level: medium, escalates_to_high_when: ["path under .github/workflows", "branch is protected/default", "path is deployment or security configuration"] }
+    side_effects: [creates_commit, may_trigger_workflows]
+    idempotency: { type: conditional, mechanism: "Update requires the current blob sha, so a replay with a stale sha fails instead of double-applying; still re-read the file to check whether the first attempt landed" }
+    confirmation: { required: true }
+    retry: { allowed: false, note: "Re-read state first. NEVER run in parallel with the delete-file endpoint or with another write to the same repo — concurrent contents writes conflict [rest-contents]" }
+    failure_modes: ["409 conflict (concurrent writes / stale state)", "422 validation or spam detection", "404", "403"]
+    verification: ["file at branch head has the intended content hash", "new commit on the branch has expected parent and author"]
+    verification_status: partial
+    sources: [rest-permissions-apps, rest-contents]
+
+  - name: github.create_pull_request
+    <<: *defaults
+    purpose: "Open a pull request from a fix branch."
+    endpoint: "POST /repos/{owner}/{repo}/pulls"
+    permissions: { required: { pull_requests: write }, unverified_additional: "Contents: read is expected for reading the compared refs — UNVERIFIED" }
+    input: { owner: string, repo: string, head: string, base: string, title: string, body: string, draft: bool }
+    output: { number: int, html_url: string, head_sha: string }
+    risk: { level: medium }
+    side_effects: [creates_pull_request, notifies_reviewers, may_trigger_workflows]
+    idempotency: { type: conditional, mechanism: "List open PRs for head->base first; 422 already_exists means one exists — reuse it" }
+    confirmation: { required: true }
+    retry: { allowed: false, note: "After a timeout, list PRs for the head branch before retrying" }
+    failure_modes: ["422 validation (already_exists / no commits between head and base)", "422 spam", "403"]
+    verification: ["PR exists with head=<fix branch> and base=<expected>", "diff matches the approved patch", "CI for head_sha reaches a terminal state"]
+    verification_status: partial
+    notes: "If the branch/commit was created with GITHUB_TOKEN, CI may not run on the PR (see errors actions.token.no_recursive_runs); another identity or a dispatch may be needed. Never auto-merge."
+    sources: [rest-permissions-apps, rest-pulls, actions-github-token]
+
+  - name: github.rerun_failed_jobs
+    <<: *defaults
+    purpose: "Re-run failed jobs (and their dependents) of a workflow run."
+    endpoint: "POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs"
+    permissions: { required: { actions: write } }
+    input: { owner: string, repo: string, run_id: int, enable_debug_logging: "bool? (field name UNVERIFIED — read from OpenAPI)" }
+    output: { new_run_attempt: int }
+    risk: { level: medium, escalates_to_high_when: ["workflow deploys to a protected/production environment", "workflow has side effects on external systems"] }
+    side_effects: [consumes_actions_minutes, creates_new_run_attempt, may_deploy]
+    idempotency: { type: non_idempotent, note: "Each call creates another attempt" }
+    confirmation: { required: true }
+    retry: { allowed: false, note: "Read run_attempt before and after; retry only if it did not advance" }
+    failure_modes: ["403 permission", "409/422 run not in a re-runnable state (exact codes UNVERIFIED)"]
+    verification: ["run_attempt increased by exactly 1", "run status is queued/in_progress for the new attempt"]
+    verification_status: partial
+    notes: "Endpoint, method and 201 status confirmed [rest-workflow-runs]. The permission is the Actions-write family per the permissions page's rerun row; this exact operation's row was not returned, hence partial."
+    sources: [rest-workflow-runs, rest-permissions-apps]
+
+  # --------------------------------------------------------------- HIGH
+  - name: github.rerun_workflow
+    <<: *defaults
+    purpose: "Re-run an entire workflow run."
+    endpoint: "POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun"
+    permissions: { required: { actions: write } }
+    input: { owner: string, repo: string, run_id: int }
+    output: { new_run_attempt: int }
+    risk: { level: medium, escalates_to_high_when: ["workflow deploys to a protected/production environment"] }
+    side_effects: [consumes_actions_minutes, creates_new_run_attempt, may_deploy]
+    idempotency: { type: non_idempotent }
+    confirmation: { required: true }
+    retry: { allowed: false }
+    failure_modes: ["403", "non re-runnable state"]
+    verification: ["run_attempt advanced by exactly 1"]
+    verification_status: verified
+    sources: [rest-workflow-runs, rest-permissions-apps]
+
+  - name: github.cancel_workflow
+    <<: *defaults
+    purpose: "Cancel an in-progress workflow run."
+    endpoint: "POST /repos/{owner}/{repo}/actions/runs/{run_id}/cancel   (force-cancel: .../force-cancel)"
+    permissions: { required: { actions: write } }
+    input: { owner: string, repo: string, run_id: int, force: bool }
+    output: { accepted: bool }
+    risk: { level: high, note: "Cancelling a production deployment mid-flight can leave systems half-updated. force-cancel bypasses always() cleanup conditions [rest-workflow-runs] and is never used unattended." }
+    side_effects: [stops_run, may_leave_partial_deployment]
+    idempotency: { type: conditional, note: "Cancelling an already-finished run is a no-op/error — check status first" }
+    confirmation: { required: true }
+    retry: { allowed: false }
+    failure_modes: ["202 accepted != cancelled — poll until conclusion == cancelled"]
+    verification: ["run conclusion becomes cancelled (poll with timeout)"]
+    verification_status: verified
+    sources: [rest-workflow-runs, rest-permissions-apps]
+
+  - name: github.merge_pull_request
+    <<: *defaults
+    purpose: "Merge a pull request."
+    endpoint: "PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge"
+    permissions: { required: { pull_requests: write } }
+    input: { owner: string, repo: string, pull_number: int, sha: "string (REQUIRED by this registry: the head SHA that was reviewed/approved)", merge_method: string }
+    output: { merged: bool, merge_commit_sha: string }
+    risk: { level: high }
+    side_effects: [modifies_base_branch, may_trigger_deployments]
+    idempotency: { type: conditional, note: "Second merge returns an error, not a second merge; still re-read PR state" }
+    confirmation: { required: true, policy: "Explicit human approval on every call; disabled entirely unless the tenant policy enables it. No auto-approve, no auto-merge." }
+    retry: { allowed: false }
+    failure_modes: ["405 cannot be merged (blocked by protection/conflicts) — never bypass", "409 head sha changed since analysis", "403", "422"]
+    verification: ["PR state == merged", "merge_commit_sha is on the base branch", "merged head == approved sha"]
+    verification_status: verified
+    notes: "Always passing `sha` makes GitHub reject the merge if the head moved after review (409) [rest-pulls]. The agent does not use admin/bypass options."
+    sources: [rest-pulls, rest-permissions-apps]
+
+planned_tools:
+  # Named in the brief; NOT yet contract-verified. Do not expose to the model.
+  - github.list_files
+  - github.list_commits
+  - github.get_commit
+  - github.list_branches
+  - github.get_branch
+  - github.create_branch          # git refs API; permission unverified
+  - github.get_issue
+  - github.update_issue
+  - github.get_pull_request
+  - github.list_pull_requests
+  - github.get_pull_request_files
+  - github.get_pull_request_reviews
+  - github.update_pull_request
+  - github.create_review
+  - github.create_review_comment
+  - github.get_workflow
+  - github.list_jobs
+  - github.get_job_logs
+  - github.get_check_suite
+  - github.delete_file
+  - github.list_deployments
+  - github.get_deployment
+  - github.list_deployment_statuses
+  - github.get_repository_permissions
+  - github.get_installation
+  - github.refresh_token          # internal (auth component), never model-callable
