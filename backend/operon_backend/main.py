@@ -163,7 +163,8 @@ async def session_diagnose_endpoint(session_id: str, request: Request, db: DBSes
         return JSONResponse(status_code=422, content={"detail": f"Invalid request body: {exc}"})
 
     query = build_query(session.user_issue, evidence_req.bundle)
-    retrieved = search(db, query)
+    tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
+    retrieved = search(db, query, tenant_id=tenant_id)
     knowledge_context = [
         {"chunk_id": r.chunk_id, "content": r.content_text, "score": round(r.score, 3)} for r in retrieved
     ]

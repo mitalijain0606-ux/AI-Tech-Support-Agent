@@ -74,10 +74,32 @@ docs/knowledge-base/
 ├── 08-agent/           safety, risk tiers, approval, recovery, audit
 ├── 09-evaluation/      eval framework + red-team scenarios
 ├── 10-playbooks/       full troubleshooting playbooks (template-conformant)
-└── 11-integration/     how this connects to the existing Operon codebase
+├── 11-integration/     how this connects to the existing Operon codebase
+└── scripts/            linter (`kb_lint.py`), RAG indexing (`seed_rag.py`), CLI search (`query_rag.py`)
 ```
 
+## RAG Pipeline & Ingestion
+
+The knowledge base connects directly to the backend retrieval store:
+
+1. **Index the Knowledge Base**:
+   ```bash
+   python docs/knowledge-base/scripts/seed_rag.py
+   ```
+   Embeds all playbooks, markdown chapter sections, error definitions (`06-errors/errors.yaml`), and tool contracts (`07-tools/tool-registry.yaml`) into `knowledge_chunks` using `fastembed` (MiniLM-L6-v2, 384 dimensions).
+
+2. **Query the Knowledge Base**:
+   ```bash
+   python docs/knowledge-base/scripts/query_rag.py "GitHub API returned 403 Resource not accessible" --prompt-view
+   ```
+
+3. **Validate Citations and Schemas**:
+   ```bash
+   python docs/knowledge-base/scripts/kb_lint.py
+   ```
+
 ## How it connects to the rest of this repository
+
 
 The existing Operon work is a *browser-extension* support agent. This KB
 specifies a different integration surface — an *API-based* GitHub agent

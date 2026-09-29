@@ -16,7 +16,7 @@ def seeded_kb():
     try:
         for doc in SEED_DOCUMENTS:
             content = doc.to_embedding_text()
-            db.add(
+            db.merge(
                 KnowledgeChunk(
                     id=f"kb_{doc.doc_id}",
                     source_type="kb",
@@ -27,6 +27,7 @@ def seeded_kb():
                 )
             )
         db.commit()
+
     finally:
         db.close()
     yield

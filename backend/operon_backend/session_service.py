@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session as DBSession
 
 from operon_backend.db_models import SessionRecord
+from operon_backend.knowledge import record_resolved_session_to_kb
 from operon_backend.retrieval import RetrievedChunk
 from operon_backend.schemas import Diagnosis, EvidenceBundle, PolicyDecision
 from operon_backend.state_machine import IllegalTransition, SessionPhase, transition
@@ -122,6 +123,8 @@ def record_diagnosis(
     if diagnosis.proposed_action is None:
         session.resolution_state = "escalated_no_action_available"
         transition(session, SessionPhase.ESCALATED, diagnosis.reasoning)
+        tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
+        record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
     else:
         session.pending_action = {
             "diagnosis": diagnosis.root_cause,
@@ -146,6 +149,8 @@ def record_policy(db: DBSession, session: SessionRecord, decision: PolicyDecisio
     if decision.decision == "DENY":
         session.resolution_state = "escalated_policy_denied"
         transition(session, SessionPhase.ESCALATED, decision.reason)
+        tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
+        record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
     elif decision.decision == "REQUIRE_APPROVAL":
         transition(session, SessionPhase.WAITING_FOR_APPROVAL, decision.reason)
     else:
@@ -207,6 +212,8 @@ def record_verification(db: DBSession, session: SessionRecord, passed: bool, mes
     if passed:
         session.resolution_state = "resolved"
         transition(session, SessionPhase.RESOLVED, message)
+        tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
+        record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
     elif session.action_attempt_count < MAX_ACTION_ATTEMPTS:
         # Phase 3 (the real bounded loop) is what actually drives a second
         # cycle from here. Today this correctly lands the session in
@@ -215,7 +222,10 @@ def record_verification(db: DBSession, session: SessionRecord, passed: bool, mes
     else:
         session.resolution_state = "escalated_verification_failed"
         transition(session, SessionPhase.ESCALATED, f"verification failed, max attempts reached: {message}")
+        tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
+        record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
 
     db.commit()
     db.refresh(session)
     return session
+
