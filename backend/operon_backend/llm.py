@@ -133,6 +133,17 @@ def _rule_based_diagnosis(message: str, bundle: EvidenceBundle) -> Diagnosis:
             ),
         )
 
+    if "insufficient" in message.lower() or "missing" in message.lower():
+        return Diagnosis(
+            category="insufficient_evidence",
+            root_cause="Insufficient evidence to isolate root cause",
+            reasoning="Current browser signals do not exhibit anomalous behavior. Further observation or reproduction is required.",
+            evidence_ids=[],
+            confidence=0.3,
+            resolvable_automatically=False,
+            proposed_action=None,
+        )
+
     return Diagnosis(
         category="unknown",
         root_cause="No anomalous evidence detected in browser bundle",

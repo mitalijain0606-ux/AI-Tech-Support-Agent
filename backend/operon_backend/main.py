@@ -182,6 +182,12 @@ async def session_diagnose_endpoint(session_id: str, request: Request, db: DBSes
     return {"diagnosis": diagnosis, "session": _serialize(session)}
 
 
+@app.post("/api/sessions/{session_id}/investigate")
+async def session_investigate_endpoint(session_id: str, request: Request, db: DBSession = Depends(get_db)):
+    """Submits evidence or drives another investigation cycle for an ongoing session."""
+    return await session_diagnose_endpoint(session_id, request, db)
+
+
 @app.post("/api/sessions/{session_id}/policy")
 async def session_policy_endpoint(session_id: str, request: PolicyRequest, db: DBSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)

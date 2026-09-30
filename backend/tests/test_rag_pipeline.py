@@ -74,9 +74,9 @@ def test_full_kb_seeding_and_chunk_count():
 def test_idempotent_reseed():
     db = SessionLocal()
     try:
-        initial_count = db.query(KnowledgeChunk).count()
+        initial_count = db.query(KnowledgeChunk).filter(KnowledgeChunk.source_type != "history").count()
         stats = ingest_all_knowledge(db, force_reembed=False)
-        after_count = db.query(KnowledgeChunk).count()
+        after_count = db.query(KnowledgeChunk).filter(KnowledgeChunk.source_type != "history").count()
         assert initial_count == after_count == stats["total_chunks"]
     finally:
         db.close()

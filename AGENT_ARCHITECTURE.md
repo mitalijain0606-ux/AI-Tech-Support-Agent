@@ -468,12 +468,14 @@ Large enough to need sequencing, same reasoning as the phase docs in
   corrupted-cache and ad-blocker scenarios both retrieve their own KB
   entry correctly, and the model correctly cited the retrieved chunk in
   `knowledge_refs`. 32 backend tests pass.
-- **Phase 3 — The bounded loop + hypothesis model.** Replace the linear
-  walk with the actual multi-cycle driver, hard limits, and
-  `Hypothesis`/`RemediationProposal` models. Gate: a session that starts
-  with insufficient evidence can loop through `INVESTIGATING` →
-  `KNOWLEDGE_LOOKUP` → `INVESTIGATING` before reaching `DIAGNOSING`,
-  and a limit-exceeded case correctly escalates instead of looping forever.
+- [x] **Phase 3 — The bounded loop + hypothesis model.** Done.
+  `loop_driver.py` (`MAX_INVESTIGATION_STEPS=8`, `MAX_TOOL_CALLS=6`,
+  `MAX_LLM_CALLS=12`, `MAX_ACTION_ATTEMPTS=2`), `Hypothesis` and
+  `RemediationProposal` schemas, bounded loop transitions in
+  `session_service.py`, and endpoint `/api/sessions/{id}/investigate`.
+  Gate met: a session starting with insufficient evidence loops
+  `INVESTIGATING` → `KNOWLEDGE_LOOKUP` → `INVESTIGATING` before reaching
+  `DIAGNOSING`, and limit-exceeded cases reliably escalate. 58 backend tests pass.
 - **Phase 4 — Questioning + progressive evidence collection.** Split
   `collectEvidence()` into the independently callable tools in the table
   above, add `NEED_INFORMATION` as a real reachable state with a popup

@@ -1,6 +1,39 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+
+HypothesisStatus = Literal["candidate", "supported", "contradicted", "confirmed", "rejected"]
+
+
+class Hypothesis(BaseModel):
+    hypothesis_id: str
+    description: str
+    confidence: float
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
+    contradicting_evidence_ids: list[str] = Field(default_factory=list)
+    required_tests: list[str] = Field(default_factory=list)
+    status: HypothesisStatus = "candidate"
+
+
+class RemediationProposal(BaseModel):
+    diagnosis: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    action_id: str
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    expected_effect: str
+    risk: str = "unknown"
+    verification_predicate: str
+    requires_approval: bool = True  # informational only — policy.py decides for real
+
+
+class ToolCallLog(BaseModel):
+    intent: str
+    reason: str
+    tool: str
+    expected_information: str
+    at: str | None = None
+
 
 
 class ConsoleEvidence(BaseModel):

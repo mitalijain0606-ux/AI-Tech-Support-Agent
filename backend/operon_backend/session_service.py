@@ -13,11 +13,25 @@ from sqlalchemy.orm import Session as DBSession
 
 from operon_backend.db_models import SessionRecord
 from operon_backend.knowledge import record_resolved_session_to_kb
+from operon_backend.loop_driver import (
+    MAX_ACTION_ATTEMPTS,
+    MAX_INVESTIGATION_STEPS,
+    MAX_LLM_CALLS,
+    MAX_TOOL_CALLS,
+    check_limits,
+    escalate_for_limit,
+    log_diagnostic_step,
+    update_or_create_hypothesis,
+)
 from operon_backend.retrieval import RetrievedChunk
-from operon_backend.schemas import Diagnosis, EvidenceBundle, PolicyDecision
+from operon_backend.schemas import (
+    Diagnosis,
+    EvidenceBundle,
+    HypothesisStatus,
+    PolicyDecision,
+    RemediationProposal,
+)
 from operon_backend.state_machine import IllegalTransition, SessionPhase, transition
-
-MAX_ACTION_ATTEMPTS = 2
 
 
 def create_session(db: DBSession, user_issue: str, source: str = "github") -> SessionRecord:
@@ -48,17 +62,13 @@ def require_phase(session: SessionRecord, expected: SessionPhase) -> None:
 
 
 def _log_step(session: SessionRecord, *, tool: str, reason: str, intent: str, expected_information: str) -> None:
-    session.diagnostic_steps = [
-        *session.diagnostic_steps,
-        {
-            "intent": intent,
-            "reason": reason,
-            "tool": tool,
-            "expected_information": expected_information,
-            "at": datetime.now(UTC).isoformat(),
-        },
-    ]
-    session.tool_call_count += 1
+    log_diagnostic_step(
+        session,
+        tool=tool,
+        reason=reason,
+        intent=intent,
+        expected_information=expected_information,
+    )
 
 
 def record_diagnosis(
@@ -68,75 +78,132 @@ def record_diagnosis(
     diagnosis: Diagnosis,
     retrieved: list[RetrievedChunk] | None = None,
 ) -> SessionRecord:
-    require_phase(session, SessionPhase.UNDERSTANDING)
+    if session.phase not in (SessionPhase.UNDERSTANDING.value, SessionPhase.INVESTIGATING.value):
+        raise IllegalTransition(
+            f"record_diagnosis requires phase UNDERSTANDING or INVESTIGATING, session is in {session.phase}"
+        )
+
+    # Check hard limits first
+    limit_exc = check_limits(session)
+    if limit_exc:
+        return escalate_for_limit(db, session, limit_exc)
 
     retrieved = retrieved or []
-    if retrieved:
-        summary = ", ".join(f"{r.chunk_id} ({r.score:.2f})" for r in retrieved)
-        lookup_reason = f"found {len(retrieved)} relevant knowledge chunk(s): {summary}"
+    tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
+
+    if session.phase == SessionPhase.UNDERSTANDING.value:
+        if retrieved:
+            summary = ", ".join(f"{r.chunk_id} ({r.score:.2f})" for r in retrieved)
+            lookup_reason = f"found {len(retrieved)} relevant knowledge chunk(s): {summary}"
+        else:
+            lookup_reason = "no knowledge chunk scored above the similarity floor"
+        transition(session, SessionPhase.KNOWLEDGE_LOOKUP, lookup_reason)
+        transition(session, SessionPhase.INVESTIGATING, "evidence already collected by the extension")
+        session.collected_evidence = [*session.collected_evidence, bundle.model_dump()]
+        _log_step(
+            session,
+            tool="collect_evidence",
+            reason="initial evidence collection from the active tab",
+            intent="investigate",
+            expected_information="console/network/storage/cookie signals",
+        )
     else:
-        lookup_reason = "no knowledge chunk scored above the similarity floor"
-    transition(session, SessionPhase.KNOWLEDGE_LOOKUP, lookup_reason)
+        session.collected_evidence = [*session.collected_evidence, bundle.model_dump()]
+        _log_step(
+            session,
+            tool="collect_evidence",
+            reason="additional evidence collected for ongoing investigation",
+            intent="investigate",
+            expected_information="signals for hypothesis validation",
+        )
 
-    transition(session, SessionPhase.INVESTIGATING, "evidence already collected by the extension")
-
-    session.collected_evidence = [*session.collected_evidence, bundle.model_dump()]
-    _log_step(
-        session,
-        tool="collect_evidence",
-        reason="initial evidence collection from the active tab",
-        intent="investigate",
-        expected_information="console/network/storage/cookie signals",
-    )
-
-    hypothesis_id = f"hyp_{uuid.uuid4().hex[:8]}"
-    if diagnosis.category == "insufficient_evidence":
-        hypothesis_status = "candidate"
-    elif diagnosis.resolvable_automatically:
-        hypothesis_status = "confirmed"
-    else:
-        hypothesis_status = "supported"
-
-    session.hypotheses = [
-        *session.hypotheses,
-        {
-            "hypothesis_id": hypothesis_id,
-            "description": diagnosis.root_cause,
-            "confidence": diagnosis.confidence,
-            "supporting_evidence_ids": diagnosis.evidence_ids,
-            "contradicting_evidence_ids": [],
-            "required_tests": [],
-            "status": hypothesis_status,
-        },
-    ]
-    session.current_hypothesis_id = hypothesis_id
+    session.llm_call_count += 1
     session.confidence = diagnosis.confidence
     session.issue_category = diagnosis.category
-    # What was actually used, not just what was offered — matches
-    # AGENT_ARCHITECTURE.md's field definition for knowledge_references.
     session.knowledge_references = diagnosis.knowledge_refs
-    session.llm_call_count += 1
 
-    transition(session, SessionPhase.HYPOTHESIS_FORMED, f"formed {hypothesis_id} from the diagnosis call")
-    transition(session, SessionPhase.DIAGNOSING, "evaluating the hypothesis against the evidence")
+    # Case 1: Insufficient evidence -> candidate hypothesis -> loop cycle
+    if diagnosis.category == "insufficient_evidence":
+        hyp = update_or_create_hypothesis(
+            session,
+            description=diagnosis.root_cause,
+            confidence=diagnosis.confidence,
+            status="candidate",
+            supporting_evidence_ids=diagnosis.evidence_ids,
+        )
 
-    if diagnosis.proposed_action is None:
-        session.resolution_state = "escalated_no_action_available"
-        transition(session, SessionPhase.ESCALATED, diagnosis.reasoning)
-        tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
-        record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
+        limit_exc = check_limits(session)
+        if limit_exc:
+            return escalate_for_limit(db, session, limit_exc)
+
+        # Bounded loop: INVESTIGATING -> KNOWLEDGE_LOOKUP -> INVESTIGATING
+        transition(
+            session,
+            SessionPhase.KNOWLEDGE_LOOKUP,
+            f"insufficient initial evidence, refining knowledge lookup for candidate: {hyp.description}",
+        )
+        transition(
+            session,
+            SessionPhase.INVESTIGATING,
+            "evaluating refined knowledge and awaiting specific evidence checks",
+        )
+        _log_step(
+            session,
+            tool="search_knowledge",
+            intent="investigate",
+            reason=f"refined knowledge search for candidate {hyp.hypothesis_id}",
+            expected_information="diagnostic checks and failure signatures",
+        )
+
+    # Case 2: Sufficient evidence / confirmed / supported or known category
     else:
-        session.pending_action = {
-            "diagnosis": diagnosis.root_cause,
-            "evidence_ids": diagnosis.evidence_ids,
-            "action_id": diagnosis.proposed_action.action_id,
-            "parameters": diagnosis.proposed_action.params,
-            "expected_effect": diagnosis.reasoning,
-            "risk": "unknown",
-            "verification_predicate": f"evidence supporting {hypothesis_id} no longer present after the action",
-            "requires_approval": True,
-        }
-        transition(session, SessionPhase.ACTION_PROPOSED, "diagnosis produced a proposed action")
+        if diagnosis.resolvable_automatically:
+            hyp_status: HypothesisStatus = "confirmed"
+        elif diagnosis.proposed_action is not None:
+            hyp_status = "supported"
+        else:
+            hyp_status = "supported" if diagnosis.category != "unknown" else "candidate"
+
+        if hyp_status == "candidate" and diagnosis.proposed_action is None:
+            hyp = update_or_create_hypothesis(
+                session,
+                description=diagnosis.root_cause,
+                confidence=diagnosis.confidence,
+                status="candidate",
+            )
+            transition(session, SessionPhase.HYPOTHESIS_FORMED, "formed candidate hypothesis from diagnosis call")
+            transition(session, SessionPhase.DIAGNOSING, "evaluating the hypothesis against the evidence")
+            session.resolution_state = "escalated_no_action_available"
+            transition(session, SessionPhase.ESCALATED, diagnosis.reasoning)
+            record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
+        else:
+            hyp = update_or_create_hypothesis(
+                session,
+                description=diagnosis.root_cause,
+                confidence=diagnosis.confidence,
+                status=hyp_status,
+                supporting_evidence_ids=diagnosis.evidence_ids,
+            )
+            transition(session, SessionPhase.HYPOTHESIS_FORMED, f"formed {hyp.hypothesis_id} from the diagnosis call")
+            transition(session, SessionPhase.DIAGNOSING, "evaluating the hypothesis against the evidence")
+
+            if diagnosis.proposed_action is None:
+                session.resolution_state = "escalated_no_action_available"
+                transition(session, SessionPhase.ESCALATED, diagnosis.reasoning)
+                record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
+            else:
+                proposal = RemediationProposal(
+                    diagnosis=diagnosis.root_cause,
+                    evidence_ids=diagnosis.evidence_ids,
+                    action_id=diagnosis.proposed_action.action_id,
+                    parameters=diagnosis.proposed_action.params,
+                    expected_effect=diagnosis.reasoning,
+                    risk="unknown",
+                    verification_predicate=f"evidence supporting {hyp.hypothesis_id} no longer present after the action",
+                    requires_approval=True,
+                )
+                session.pending_action = proposal.model_dump()
+                transition(session, SessionPhase.ACTION_PROPOSED, "diagnosis produced a proposed action")
 
     db.commit()
     db.refresh(session)
@@ -215,9 +282,16 @@ def record_verification(db: DBSession, session: SessionRecord, passed: bool, mes
         tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
         record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
     elif session.action_attempt_count < MAX_ACTION_ATTEMPTS:
-        # Phase 3 (the real bounded loop) is what actually drives a second
-        # cycle from here. Today this correctly lands the session in
-        # INVESTIGATING and stops — a real next step, honestly incomplete.
+        if session.hypotheses:
+            current_h = session.hypotheses[-1]
+            update_or_create_hypothesis(
+                session,
+                description=current_h.get("description", ""),
+                confidence=0.0,
+                status="contradicted",
+                contradicting_evidence_ids=current_h.get("supporting_evidence_ids", []),
+                hypothesis_id=current_h.get("hypothesis_id"),
+            )
         transition(session, SessionPhase.INVESTIGATING, f"verification failed, retry budget remains: {message}")
     else:
         session.resolution_state = "escalated_verification_failed"
