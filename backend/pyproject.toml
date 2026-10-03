@@ -11,10 +11,11 @@ dependencies = [
     "sqlalchemy",
     "fastembed",
     "numpy",
+    "pyyaml",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-asyncio", "ruff", "pyyaml"]
+dev = ["pytest", "pytest-asyncio", "ruff"]
 
 [tool.setuptools.packages.find]
 include = ["operon_backend*"]

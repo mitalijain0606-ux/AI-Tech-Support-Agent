@@ -6,3 +6,4 @@ pydantic-settings
 sqlalchemy
 fastembed
 numpy
+pyyaml

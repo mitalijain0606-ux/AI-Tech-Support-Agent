@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import type { PopupCommand, SessionState } from "../lib/types";
+import type { ExtensionState, PopupCommand, ViewPhase } from "../lib/types";
 import { AlertIcon, BeakerIcon, CheckIcon, EscalateIcon } from "./icons";
 
-const PHASE_LABEL: Record<SessionState["phase"], string> = {
+const PHASE_LABEL: Record<ViewPhase, string> = {
   idle: "Idle",
   seeded: "Seeded",
   collecting: "Collecting evidence",
-  diagnosing: "Diagnosing",
+  investigating: "Investigating",
+  checking_policy: "Checking policy",
+  needs_more_evidence: "Needs more evidence",
   awaiting_approval: "Awaiting approval",
   executing: "Applying fix",
   verifying: "Verifying",
@@ -15,7 +17,7 @@ const PHASE_LABEL: Record<SessionState["phase"], string> = {
   error: "Error",
 };
 
-const BUSY_PHASES = new Set(["collecting", "diagnosing", "executing", "verifying"]);
+const BUSY_PHASES = new Set<ViewPhase>(["collecting", "investigating", "checking_policy", "executing", "verifying"]);
 
 function Button({
   children,
@@ -65,7 +67,7 @@ function Pill({ children }: { children: React.ReactNode }) {
   );
 }
 
-function StatusDot({ phase }: { phase: SessionState["phase"] }) {
+function StatusDot({ phase }: { phase: ViewPhase }) {
   const active = BUSY_PHASES.has(phase);
   const settled = phase === "resolved" || phase === "escalated" || phase === "error";
   return (
@@ -78,14 +80,14 @@ function StatusDot({ phase }: { phase: SessionState["phase"] }) {
 }
 
 export function App() {
-  const [state, setState] = useState<SessionState>({ phase: "idle" });
+  const [state, setState] = useState<ExtensionState>({ phase: "idle" });
   const [message, setMessage] = useState("");
   const portRef = useRef<chrome.runtime.Port | null>(null);
 
   useEffect(() => {
     const port = chrome.runtime.connect({ name: "popup" });
     portRef.current = port;
-    port.onMessage.addListener((next: SessionState) => setState(next));
+    port.onMessage.addListener((next: ExtensionState) => setState(next));
     port.postMessage({ type: "GET_STATE" } satisfies PopupCommand);
     return () => port.disconnect();
   }, []);
@@ -95,6 +97,9 @@ export function App() {
   }
 
   const busy = BUSY_PHASES.has(state.phase);
+  const session = state.session;
+  const pending = session?.pending_action ?? null;
+  const currentHypothesis = session?.hypotheses.find((h) => h.hypothesis_id === session.current_hypothesis_id);
 
   return (
     <div className="w-[380px] bg-white text-neutral-950">
@@ -155,34 +160,64 @@ export function App() {
           </div>
         )}
 
-        {state.phase === "awaiting_approval" && state.diagnosis && (
+        {state.phase === "needs_more_evidence" && (
           <div className="flex flex-col gap-3">
             <div className="rounded-md border border-neutral-200 bg-neutral-50 p-3">
-              <p className="text-[13px] font-semibold text-neutral-900">{state.diagnosis.root_cause}</p>
-              <p className="mt-1.5 text-[12px] leading-relaxed text-neutral-600">{state.diagnosis.reasoning}</p>
+              <p className="text-[13px] font-semibold text-neutral-900">Not enough evidence yet</p>
+              <p className="mt-1.5 text-[12px] leading-relaxed text-neutral-600">{state.message}</p>
+              {currentHypothesis && (
+                <p className="mt-2 text-[11.5px] text-neutral-500">
+                  Working hypothesis ({currentHypothesis.status}): {currentHypothesis.description}
+                </p>
+              )}
+            </div>
+            <p className="text-[11.5px] text-neutral-500">
+              Reproduce the problem in this tab, then investigate again — Operon will watch for a few seconds.
+            </p>
+            <div className="flex gap-2">
+              <Button variant="secondary" onClick={() => send({ type: "RESET" })}>
+                Reset
+              </Button>
+              <Button variant="primary" full onClick={() => send({ type: "INVESTIGATE_AGAIN" })}>
+                Investigate again
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {state.phase === "awaiting_approval" && pending && (
+          <div className="flex flex-col gap-3">
+            <div className="rounded-md border border-neutral-200 bg-neutral-50 p-3">
+              <p className="text-[13px] font-semibold text-neutral-900">
+                {state.diagnosis?.root_cause ?? pending.diagnosis}
+              </p>
+              <p className="mt-1.5 text-[12px] leading-relaxed text-neutral-600">
+                {state.diagnosis?.reasoning ?? pending.expected_effect}
+              </p>
               <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                 <span className="font-mono text-[10px] uppercase tracking-wider text-neutral-400">Evidence</span>
-                {state.diagnosis.evidence_ids.map((id) => (
+                {pending.evidence_ids.map((id) => (
                   <Pill key={id}>{id}</Pill>
                 ))}
               </div>
-              <p className="mt-2 text-[11px] text-neutral-400">
-                Confidence {Math.round(state.diagnosis.confidence * 100)}%
-              </p>
+              {state.diagnosis && state.diagnosis.knowledge_refs.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-neutral-400">Knowledge</span>
+                  {state.diagnosis.knowledge_refs.map((id) => (
+                    <Pill key={id}>{id}</Pill>
+                  ))}
+                </div>
+              )}
+              <p className="mt-2 text-[11px] text-neutral-400">Confidence {Math.round((session?.confidence ?? 0) * 100)}%</p>
             </div>
 
-            {state.diagnosis.proposed_action && (
-              <div className="rounded-md border border-neutral-200 px-3 py-2">
-                <span className="font-mono text-[12px] text-neutral-900">
-                  {state.diagnosis.proposed_action.action_id}
-                </span>
-                {Object.entries(state.diagnosis.proposed_action.params).length > 0 && (
-                  <span className="ml-1.5 font-mono text-[11px] text-neutral-400">
-                    {JSON.stringify(state.diagnosis.proposed_action.params)}
-                  </span>
-                )}
-              </div>
-            )}
+            <div className="rounded-md border border-neutral-200 px-3 py-2">
+              <span className="font-mono text-[12px] text-neutral-900">{pending.action_id}</span>
+              {Object.entries(pending.parameters).length > 0 && (
+                <span className="ml-1.5 font-mono text-[11px] text-neutral-400">{JSON.stringify(pending.parameters)}</span>
+              )}
+              {state.policy && <p className="mt-1 text-[11px] text-neutral-500">{state.policy.reason}</p>}
+            </div>
 
             <div className="flex gap-2">
               <Button variant="secondary" full onClick={() => send({ type: "DENY" })}>
@@ -197,11 +232,13 @@ export function App() {
 
         {(state.phase === "resolved" || state.phase === "escalated" || state.phase === "error") && (
           <div className="flex h-[188px] flex-col items-center justify-center gap-3 text-center">
-            {state.phase === "resolved" && <CheckIcon className="h-7 w-7 text-neutral-950" />}
+            {state.phase === "resolved" && session?.resolution_state !== "declined_by_user" && (
+              <CheckIcon className="h-7 w-7 text-neutral-950" />
+            )}
             {state.phase === "escalated" && <EscalateIcon className="h-7 w-7 text-neutral-950" />}
             {state.phase === "error" && <AlertIcon className="h-7 w-7 text-neutral-950" />}
             <p className="max-w-[280px] text-[12.5px] text-neutral-600">
-              {state.message ?? state.diagnosis?.reasoning ?? "Done."}
+              {state.message || state.diagnosis?.reasoning || "Done."}
             </p>
             <Button variant="secondary" onClick={() => send({ type: "RESET" })}>
               Reset
@@ -209,6 +246,12 @@ export function App() {
           </div>
         )}
       </main>
+
+      {session && (
+        <footer className="border-t border-neutral-100 px-4 py-2 font-mono text-[10px] text-neutral-400">
+          session {session.session_id.slice(0, 8)} · {session.phase}
+        </footer>
+      )}
     </div>
   );
 }
