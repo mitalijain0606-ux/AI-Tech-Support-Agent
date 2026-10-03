@@ -10,6 +10,7 @@ from operon_backend.schemas import (
     ConsoleEvidence,
     CookieSignal,
     EvidenceBundle,
+    NetworkEvidence,
     StorageSignal,
 )
 
@@ -169,3 +170,47 @@ def test_api_diagnose_endpoint_tripwire_rejection():
     response = client.post("/api/diagnose", json=payload)
     assert response.status_code == 422
     assert "Security Tripwire Triggered" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("message", ["GitHub feels broken", "content is missing", "insufficient"])
+async def test_rule_based_empty_bundle_is_insufficient_regardless_of_wording(message):
+    settings.groq_api_key = ""
+    bundle = EvidenceBundle(
+        url="https://github.com",
+        timestamp=1726000000.0,
+        console=[ConsoleEvidence(id="ev_001", level="warn", text="deprecated API")],
+        cookies=[CookieSignal(id="ev_002", name="logged_in", domain="github.com")],
+    )
+    diagnosis = await diagnose(message, bundle)
+
+    assert diagnosis.category == "insufficient_evidence"
+    assert diagnosis.proposed_action is None
+    assert diagnosis.evidence_ids == []
+
+
+@pytest.mark.asyncio
+async def test_rule_based_wording_never_overrides_real_evidence(sample_bundle):
+    settings.groq_api_key = ""
+    diagnosis = await diagnose("insufficient evidence, data missing", sample_bundle)
+    assert diagnosis.category == "storage_corruption"
+
+
+@pytest.mark.asyncio
+async def test_rule_based_blocked_by_client():
+    settings.groq_api_key = ""
+    bundle = EvidenceBundle(
+        url="https://github.com",
+        timestamp=1726000000.0,
+        network=[
+            NetworkEvidence(
+                id="ev_001", method="GET", url="https://collector.github.com/x", status=0,
+                status_text="net::ERR_BLOCKED_BY_CLIENT",
+            )
+        ],
+    )
+    diagnosis = await diagnose("parts of the page never load", bundle)
+
+    assert diagnosis.category == "blocked_by_client"
+    assert diagnosis.evidence_ids == ["ev_001"]
+    assert diagnosis.proposed_action is None

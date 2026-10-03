@@ -82,3 +82,37 @@ def test_tripwire_rejects_sensitive_json_fields():
         scan_raw_payload(raw_payload)
 
     assert exc_info.value.rule == "sensitive_json_field"
+
+
+def test_tripwire_allows_commit_sha_in_url_path():
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    bundle = EvidenceBundle(
+        url=f"https://github.com/octo/repo/commit/{sha}",
+        timestamp=1726000000.0,
+        console=[ConsoleEvidence(id="ev_001", text=f"Failed to load https://github.com/octo/repo/blob/{sha}/a.js")],
+    )
+    scan_raw_payload(json.dumps(bundle.model_dump()))
+
+
+def test_tripwire_allows_gist_id_in_url_path():
+    scan_raw_payload(json.dumps({"url": "https://gist.github.com/octo/4f53cda18c2d4e8b9a10123456789abc"}))
+
+
+def test_tripwire_still_rejects_long_hex_in_url_query():
+    hex_key = "4f53cda18c2d4e8b9a10123456789abc4f53cda1"
+    raw_payload = json.dumps({"url": f"https://api.example.com/v1/data?access_token={hex_key}"})
+
+    with pytest.raises(TripwireHit) as exc_info:
+        scan_raw_payload(raw_payload)
+
+    assert exc_info.value.rule == "long_hex_secret"
+
+
+def test_tripwire_rejects_bare_hex_even_when_a_url_is_also_present():
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    raw_payload = json.dumps({"url": f"https://github.com/o/r/commit/{sha}", "note": f"key {sha}"})
+
+    with pytest.raises(TripwireHit) as exc_info:
+        scan_raw_payload(raw_payload)
+
+    assert exc_info.value.rule == "long_hex_secret"

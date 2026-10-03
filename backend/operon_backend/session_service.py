@@ -14,10 +14,12 @@ from sqlalchemy.orm import Session as DBSession
 from operon_backend.db_models import SessionRecord
 from operon_backend.knowledge import record_resolved_session_to_kb
 from operon_backend.loop_driver import (
+    CLOSED_HYPOTHESIS_STATUSES,
     MAX_ACTION_ATTEMPTS,
     MAX_INVESTIGATION_STEPS,
     MAX_LLM_CALLS,
     MAX_TOOL_CALLS,
+    LimitExceeded,
     check_limits,
     escalate_for_limit,
     log_diagnostic_step,
@@ -61,6 +63,36 @@ def require_phase(session: SessionRecord, expected: SessionPhase) -> None:
         )
 
 
+# Phases from which a new evidence bundle may be submitted for diagnosis.
+INVESTIGABLE_PHASES = (SessionPhase.UNDERSTANDING.value, SessionPhase.INVESTIGATING.value)
+
+
+def begin_investigation_cycle(db: DBSession, session: SessionRecord) -> LimitExceeded | None:
+    """Gate that must pass before any retrieval or LLM work is spent on an
+    /investigate call. Raises IllegalTransition if the session can't accept
+    evidence in its current phase; if a hard limit is already reached,
+    escalates the session and returns the LimitExceeded."""
+    if session.phase not in INVESTIGABLE_PHASES:
+        raise IllegalTransition(
+            f"Investigation requires phase UNDERSTANDING or INVESTIGATING, session is in {session.phase}"
+        )
+    limit_exc = check_limits(session)
+    if limit_exc:
+        escalate_for_limit(db, session, limit_exc)
+    return limit_exc
+
+
+def _remediation_previously_failed(session: SessionRecord, action_id: str, params: dict) -> bool:
+    """True if this exact action (same id and params) was already attempted
+    in this session and either failed to execute or failed verification."""
+    for attempt in session.attempted_actions or []:
+        if attempt.get("action_id") != action_id or (attempt.get("params") or {}) != (params or {}):
+            continue
+        if attempt.get("succeeded") is False or attempt.get("verified") is False:
+            return True
+    return False
+
+
 def _log_step(session: SessionRecord, *, tool: str, reason: str, intent: str, expected_information: str) -> None:
     log_diagnostic_step(
         session,
@@ -78,7 +110,7 @@ def record_diagnosis(
     diagnosis: Diagnosis,
     retrieved: list[RetrievedChunk] | None = None,
 ) -> SessionRecord:
-    if session.phase not in (SessionPhase.UNDERSTANDING.value, SessionPhase.INVESTIGATING.value):
+    if session.phase not in INVESTIGABLE_PHASES:
         raise IllegalTransition(
             f"record_diagnosis requires phase UNDERSTANDING or INVESTIGATING, session is in {session.phase}"
         )
@@ -177,6 +209,9 @@ def record_diagnosis(
             transition(session, SessionPhase.ESCALATED, diagnosis.reasoning)
             record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
         else:
+            action_already_failed = diagnosis.proposed_action is not None and _remediation_previously_failed(
+                session, diagnosis.proposed_action.action_id, diagnosis.proposed_action.params
+            )
             hyp = update_or_create_hypothesis(
                 session,
                 description=diagnosis.root_cause,
@@ -184,6 +219,30 @@ def record_diagnosis(
                 status=hyp_status,
                 supporting_evidence_ids=diagnosis.evidence_ids,
             )
+
+            # Never re-propose a remediation that already failed, and never
+            # advance a hypothesis that verification already refuted —
+            # AGENT_ARCHITECTURE.md: "never retry the same action unchanged".
+            if action_already_failed or hyp.status in CLOSED_HYPOTHESIS_STATUSES:
+                if action_already_failed:
+                    session.resolution_state = "escalated_remediation_already_failed"
+                    reason = (
+                        f"proposed remediation '{diagnosis.proposed_action.action_id}' with params "
+                        f"{diagnosis.proposed_action.params} already failed in this session; "
+                        f"not retrying it unchanged"
+                    )
+                else:
+                    session.resolution_state = "escalated_hypothesis_contradicted"
+                    reason = (
+                        f"evidence still points to {hyp.hypothesis_id}, which was already "
+                        f"{hyp.status}; no alternative explanation found"
+                    )
+                transition(session, SessionPhase.ESCALATED, reason)
+                record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
+                db.commit()
+                db.refresh(session)
+                return session
+
             transition(session, SessionPhase.HYPOTHESIS_FORMED, f"formed {hyp.hypothesis_id} from the diagnosis call")
             transition(session, SessionPhase.DIAGNOSING, "evaluating the hypothesis against the evidence")
 
@@ -250,7 +309,9 @@ def record_action_result(db: DBSession, session: SessionRecord, succeeded: bool,
         *session.attempted_actions,
         {
             "action_id": session.pending_action.get("action_id") if session.pending_action else None,
+            "params": session.pending_action.get("parameters", {}) if session.pending_action else {},
             "succeeded": succeeded,
+            "verified": None,
             "detail": detail,
             "at": datetime.now(UTC).isoformat(),
         },
@@ -275,6 +336,10 @@ def record_verification(db: DBSession, session: SessionRecord, passed: bool, mes
         "message": message,
         "at": datetime.now(UTC).isoformat(),
     }
+    if session.attempted_actions:
+        attempts = [dict(a) for a in session.attempted_actions]
+        attempts[-1]["verified"] = passed
+        session.attempted_actions = attempts
 
     if passed:
         session.resolution_state = "resolved"
@@ -283,7 +348,10 @@ def record_verification(db: DBSession, session: SessionRecord, passed: bool, mes
         record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
     elif session.action_attempt_count < MAX_ACTION_ATTEMPTS:
         if session.hypotheses:
-            current_h = session.hypotheses[-1]
+            current_h = next(
+                (h for h in session.hypotheses if h.get("hypothesis_id") == session.current_hypothesis_id),
+                session.hypotheses[-1],
+            )
             update_or_create_hypothesis(
                 session,
                 description=current_h.get("description", ""),

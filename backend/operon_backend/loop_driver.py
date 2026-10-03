@@ -36,6 +36,10 @@ MAX_TOOL_CALLS: int = 6
 MAX_LLM_CALLS: int = 12
 MAX_ACTION_ATTEMPTS: int = 2
 
+# A hypothesis in one of these states has been refuted — e.g. its remediation
+# failed verification — and must never be silently re-confirmed.
+CLOSED_HYPOTHESIS_STATUSES = frozenset({"contradicted", "rejected"})
+
 
 class LimitExceeded(Exception):
     def __init__(self, limit_name: str, current_value: int, max_value: int):
@@ -97,39 +101,68 @@ def update_or_create_hypothesis(
     Structural rule from AGENT_ARCHITECTURE.md: new evidence updates
     existing hypotheses' supporting/contradicting IDs and status before
     creating a new hypothesis.
+
+    Matching, in order: an explicit `hypothesis_id`; else a hypothesis with
+    the same description; else the current hypothesis, but only while it is
+    still a `candidate` (a vague candidate being refined into a specific
+    one). A supported/confirmed hypothesis with a different description is
+    a competing explanation and gets its own entry.
+
+    A closed hypothesis (contradicted/rejected) is never reopened by
+    implicit matching: restating it merges the new evidence but keeps its
+    closed status, so callers can see it was already refuted.
     """
     supporting_ids = supporting_evidence_ids or []
     contradicting_ids = contradicting_evidence_ids or []
     req_tests = required_tests or []
 
-    # Look for matching existing hypothesis
-    for i, h in enumerate(session.hypotheses):
-        is_target = False
-        if hypothesis_id and h.get("hypothesis_id") == hypothesis_id:
-            is_target = True
-        elif session.current_hypothesis_id and h.get("hypothesis_id") == session.current_hypothesis_id:
-            is_target = True
-        elif description and h.get("description") == description:
-            is_target = True
+    def _norm(text: str) -> str:
+        return " ".join(text.split()).casefold()
 
-        if is_target:
-            merged_supporting = list(dict.fromkeys(h.get("supporting_evidence_ids", []) + supporting_ids))
-            merged_contradicting = list(dict.fromkeys(h.get("contradicting_evidence_ids", []) + contradicting_ids))
-            merged_tests = list(dict.fromkeys(h.get("required_tests", []) + req_tests))
-            updated_h = Hypothesis(
-                hypothesis_id=h["hypothesis_id"],
-                description=description or h.get("description", ""),
-                confidence=confidence,
-                supporting_evidence_ids=merged_supporting,
-                contradicting_evidence_ids=merged_contradicting,
-                required_tests=merged_tests,
-                status=status,
-            )
-            updated_list = list(session.hypotheses)
-            updated_list[i] = updated_h.model_dump()
-            session.hypotheses = updated_list
-            session.current_hypothesis_id = updated_h.hypothesis_id
-            return updated_h
+    match_index: int | None = None
+    if hypothesis_id:
+        match_index = next(
+            (i for i, h in enumerate(session.hypotheses) if h.get("hypothesis_id") == hypothesis_id), None
+        )
+    if match_index is None and description:
+        match_index = next(
+            (i for i, h in enumerate(session.hypotheses) if _norm(h.get("description", "")) == _norm(description)),
+            None,
+        )
+    if match_index is None and session.current_hypothesis_id:
+        match_index = next(
+            (
+                i
+                for i, h in enumerate(session.hypotheses)
+                if h.get("hypothesis_id") == session.current_hypothesis_id and h.get("status") == "candidate"
+            ),
+            None,
+        )
+
+    if match_index is not None:
+        i, h = match_index, session.hypotheses[match_index]
+        merged_supporting = list(dict.fromkeys(h.get("supporting_evidence_ids", []) + supporting_ids))
+        merged_contradicting = list(dict.fromkeys(h.get("contradicting_evidence_ids", []) + contradicting_ids))
+        merged_tests = list(dict.fromkeys(h.get("required_tests", []) + req_tests))
+        keep_closed = (
+            not hypothesis_id
+            and h.get("status") in CLOSED_HYPOTHESIS_STATUSES
+            and status not in CLOSED_HYPOTHESIS_STATUSES
+        )
+        updated_h = Hypothesis(
+            hypothesis_id=h["hypothesis_id"],
+            description=description or h.get("description", ""),
+            confidence=h.get("confidence", 0.0) if keep_closed else confidence,
+            supporting_evidence_ids=merged_supporting,
+            contradicting_evidence_ids=merged_contradicting,
+            required_tests=merged_tests,
+            status=h["status"] if keep_closed else status,
+        )
+        updated_list = list(session.hypotheses)
+        updated_list[i] = updated_h.model_dump()
+        session.hypotheses = updated_list
+        session.current_hypothesis_id = updated_h.hypothesis_id
+        return updated_h
 
     # Create new hypothesis
     new_h = Hypothesis(

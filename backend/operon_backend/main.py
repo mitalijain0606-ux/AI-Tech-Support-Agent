@@ -24,6 +24,7 @@ from operon_backend.schemas import (
     VerifyRequest,
 )
 from operon_backend.session_service import (
+    begin_investigation_cycle,
     create_session,
     get_session,
     record_action_result,
@@ -32,7 +33,7 @@ from operon_backend.session_service import (
     record_policy,
     record_verification,
 )
-from operon_backend.state_machine import IllegalTransition
+from operon_backend.state_machine import IllegalTransition, SessionPhase
 from operon_backend.tripwire import TripwireHit, scan_raw_payload
 
 
@@ -162,6 +163,16 @@ async def session_diagnose_endpoint(session_id: str, request: Request, db: DBSes
     except (ValidationError, ValueError) as exc:
         return JSONResponse(status_code=422, content={"detail": f"Invalid request body: {exc}"})
 
+    # Phase and hard-limit gate — before any retrieval or LLM work is spent.
+    try:
+        limit_exc = begin_investigation_cycle(db, session)
+    except IllegalTransition as exc:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+    if limit_exc:
+        # No diagnosis was produced; the session is now ESCALATED and its
+        # resolution_state / phase_history say which limit was hit.
+        return {"diagnosis": None, "session": _serialize(session)}
+
     query = build_query(session.user_issue, evidence_req.bundle)
     tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
     retrieved = search(db, query, tenant_id=tenant_id)
@@ -178,6 +189,12 @@ async def session_diagnose_endpoint(session_id: str, request: Request, db: DBSes
         session = record_diagnosis(db, session, evidence_req.bundle, diagnosis, retrieved)
     except IllegalTransition as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    # The response must agree with the session: a proposed action is only
+    # returned when the session actually reached ACTION_PROPOSED (not when it
+    # escalated, e.g. on a limit or an already-failed remediation).
+    if diagnosis.proposed_action is not None and session.phase != SessionPhase.ACTION_PROPOSED.value:
+        diagnosis = diagnosis.model_copy(update={"proposed_action": None, "resolvable_automatically": False})
 
     return {"diagnosis": diagnosis, "session": _serialize(session)}
 

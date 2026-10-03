@@ -102,6 +102,24 @@ def _rule_based_diagnosis(message: str, bundle: EvidenceBundle) -> Diagnosis:
             ),
         )
 
+    # Requests a browser-side content blocker cancelled (status 0, "blocked")
+    # — same rule as SYSTEM_PROMPT rule 5. No action is in our capability set.
+    blocked_network = [
+        n for n in bundle.network if n.status == 0 and "blocked" in (n.status_text or "").lower()
+    ]
+    if blocked_network:
+        return Diagnosis(
+            category="blocked_by_client",
+            root_cause="A browser extension appears to be blocking requests to this site",
+            reasoning=f"{len(blocked_network)} request(s) were cancelled client-side "
+            f"({blocked_network[0].status_text}). Check your ad blocker / privacy extension "
+            f"settings for this site, then ask again.",
+            evidence_ids=[n.id for n in blocked_network if n.id in valid_ids],
+            confidence=0.85,
+            resolvable_automatically=False,
+            proposed_action=None,
+        )
+
     # Check for network 4xx/5xx errors
     failed_network = [n for n in bundle.network if n.status >= 400]
     if failed_network:
@@ -133,23 +151,18 @@ def _rule_based_diagnosis(message: str, bundle: EvidenceBundle) -> Diagnosis:
             ),
         )
 
-    if "insufficient" in message.lower() or "missing" in message.lower():
-        return Diagnosis(
-            category="insufficient_evidence",
-            root_cause="Insufficient evidence to isolate root cause",
-            reasoning="Current browser signals do not exhibit anomalous behavior. Further observation or reproduction is required.",
-            evidence_ids=[],
-            confidence=0.3,
-            resolvable_automatically=False,
-            proposed_action=None,
-        )
-
+    # Nothing anomalous was observed — decided from the bundle itself, never
+    # from the wording of the user's message.
+    warnings = [c for c in bundle.console if c.level != "error"]
     return Diagnosis(
-        category="unknown",
-        root_cause="No anomalous evidence detected in browser bundle",
-        reasoning="All signals in the bundle appear healthy.",
+        category="insufficient_evidence",
+        root_cause="Insufficient evidence to isolate root cause",
+        reasoning=f"Observed {len(warnings)} console warning(s), {len(bundle.network)} network "
+        f"signal(s), {len(bundle.cookies)} cookie(s) and {len(bundle.storage)} storage signal(s), "
+        f"but no console errors, failed requests, or storage parse failures. Reproducing the "
+        f"issue while Operon is attached may capture the evidence needed.",
         evidence_ids=[],
-        confidence=0.5,
+        confidence=0.3,
         resolvable_automatically=False,
         proposed_action=None,
     )

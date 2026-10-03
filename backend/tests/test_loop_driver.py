@@ -269,13 +269,22 @@ def test_verification_failure_updates_hypothesis_and_retries():
     # Check hypothesis status updated to contradicted
     assert body_fail1["hypotheses"][0]["status"] == "contradicted"
 
-    # Retry cycle: propose action again
-    client.post(f"/api/sessions/{session_id}/investigate", json={"bundle": bundle})
+    # Retry cycle: new evidence points at a *different* key, so this is a
+    # genuinely different remediation, not the failed one repeated.
+    retry_bundle = {
+        "url": "https://github.com",
+        "timestamp": 1726000001.0,
+        "storage": [
+            {"id": "ev_010", "key": "other_cache", "present": True, "parse_status": "syntax_error"}
+        ],
+    }
+    res_retry = client.post(f"/api/sessions/{session_id}/investigate", json={"bundle": retry_bundle})
+    assert res_retry.json()["session"]["phase"] == "ACTION_PROPOSED"
     client.post(
         f"/api/sessions/{session_id}/policy",
         json={
             "action_id": "clear_storage_key",
-            "params": {"key": "operon_demo_cache"},
+            "params": {"key": "other_cache"},
             "provider_capabilities": ["clear_storage_key"],
         },
     )
@@ -292,3 +301,132 @@ def test_verification_failure_updates_hypothesis_and_retries():
     assert body_fail2["phase"] == "ESCALATED"
     assert body_fail2["resolution_state"] == "escalated_verification_failed"
     assert body_fail2["action_attempt_count"] == 2
+
+
+# ---- Investigation-flow fixes ------------------------------------------------
+
+_CORRUPTED_BUNDLE = {
+    "url": "https://github.com",
+    "timestamp": 1726000000.0,
+    "storage": [
+        {"id": "ev_001", "key": "operon_demo_cache", "present": True, "parse_status": "syntax_error"}
+    ],
+}
+
+
+def _forbid_retrieval_and_llm(monkeypatch):
+    async def _no_llm(*args, **kwargs):
+        raise AssertionError("LLM must not be called")
+
+    def _no_search(*args, **kwargs):
+        raise AssertionError("retrieval must not run")
+
+    monkeypatch.setattr("operon_backend.main.diagnose", _no_llm)
+    monkeypatch.setattr("operon_backend.main.search", _no_search)
+
+
+def test_investigate_in_wrong_phase_returns_409_before_retrieval_or_llm(monkeypatch):
+    settings.groq_api_key = ""
+    session_id = client.post("/api/sessions", json={"user_issue": "dashboard broken"}).json()["session_id"]
+    res = client.post(f"/api/sessions/{session_id}/investigate", json={"bundle": _CORRUPTED_BUNDLE})
+    assert res.json()["session"]["phase"] == "ACTION_PROPOSED"
+
+    _forbid_retrieval_and_llm(monkeypatch)
+    res = client.post(f"/api/sessions/{session_id}/investigate", json={"bundle": _CORRUPTED_BUNDLE})
+    assert res.status_code == 409
+
+
+def test_investigate_limit_hit_escalates_before_retrieval_or_llm(monkeypatch):
+    db = SessionLocal()
+    try:
+        session = create_session(db, "limit before work")
+        session.phase = SessionPhase.INVESTIGATING.value
+        session.tool_call_count = MAX_TOOL_CALLS
+        db.commit()
+        session_id = session.id
+    finally:
+        db.close()
+
+    _forbid_retrieval_and_llm(monkeypatch)
+    res = client.post(f"/api/sessions/{session_id}/investigate", json={"bundle": _CORRUPTED_BUNDLE})
+    assert res.status_code == 200
+    body = res.json()
+    # Consistent with the session: no diagnosis, no action, session escalated.
+    assert body["diagnosis"] is None
+    assert body["session"]["phase"] == "ESCALATED"
+    assert body["session"]["resolution_state"] == "escalated_max_tool_calls_exceeded"
+    assert body["session"]["llm_call_count"] == 0
+
+
+def test_contradicted_hypothesis_is_not_reconfirmed():
+    db = SessionLocal()
+    try:
+        session = create_session(db, "contradiction")
+        h = update_or_create_hypothesis(session, description="Corrupted key", confidence=0.9, status="confirmed")
+        update_or_create_hypothesis(
+            session, description="Corrupted key", confidence=0.0, status="contradicted", hypothesis_id=h.hypothesis_id
+        )
+
+        # Restating the same root cause must not reopen it.
+        again = update_or_create_hypothesis(
+            session, description="corrupted  KEY", confidence=0.95, status="confirmed", supporting_evidence_ids=["ev_9"]
+        )
+        assert again.hypothesis_id == h.hypothesis_id
+        assert again.status == "contradicted"
+        assert again.confidence == 0.0
+        assert "ev_9" in again.supporting_evidence_ids
+        assert len(session.hypotheses) == 1
+    finally:
+        db.close()
+
+
+def test_different_explanation_creates_competing_hypothesis_not_overwrite():
+    db = SessionLocal()
+    try:
+        session = create_session(db, "competing hypotheses")
+        h1 = update_or_create_hypothesis(session, description="Corrupted key", confidence=0.9, status="supported")
+        h2 = update_or_create_hypothesis(session, description="Expired session cookie", confidence=0.7, status="supported")
+        assert h1.hypothesis_id != h2.hypothesis_id
+        assert [h["description"] for h in session.hypotheses] == ["Corrupted key", "Expired session cookie"]
+        assert session.current_hypothesis_id == h2.hypothesis_id
+    finally:
+        db.close()
+
+
+def test_candidate_is_refined_in_place():
+    db = SessionLocal()
+    try:
+        session = create_session(db, "refinement")
+        c = update_or_create_hypothesis(session, description="Not enough evidence yet", confidence=0.3, status="candidate")
+        r = update_or_create_hypothesis(session, description="Corrupted key", confidence=0.9, status="confirmed")
+        assert r.hypothesis_id == c.hypothesis_id
+        assert len(session.hypotheses) == 1
+    finally:
+        db.close()
+
+
+def test_same_failed_remediation_is_not_reproposed():
+    settings.groq_api_key = ""
+    session_id = client.post("/api/sessions", json={"user_issue": "dashboard broken"}).json()["session_id"]
+    client.post(f"/api/sessions/{session_id}/investigate", json={"bundle": _CORRUPTED_BUNDLE})
+    client.post(
+        f"/api/sessions/{session_id}/policy",
+        json={"action_id": "clear_storage_key", "params": {"key": "operon_demo_cache"}, "provider_capabilities": ["clear_storage_key"]},
+    )
+    client.post(f"/api/sessions/{session_id}/approve", json={"approved": True})
+    client.post(f"/api/sessions/{session_id}/action-result", json={"succeeded": True, "detail": "cleared"})
+    res = client.post(f"/api/sessions/{session_id}/verify", json={"passed": False, "message": "still broken"})
+    assert res.json()["phase"] == "INVESTIGATING"
+    assert res.json()["attempted_actions"][-1]["verified"] is False
+
+    # Same evidence → same diagnosis → same action. Must escalate, not re-propose.
+    res = client.post(f"/api/sessions/{session_id}/investigate", json={"bundle": _CORRUPTED_BUNDLE})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["session"]["phase"] == "ESCALATED"
+    assert body["session"]["resolution_state"] == "escalated_remediation_already_failed"
+    assert body["session"]["pending_action"]["action_id"] == "clear_storage_key"  # the old, failed one
+    assert body["diagnosis"]["proposed_action"] is None
+    assert body["session"]["hypotheses"][0]["status"] == "contradicted"
+    # ACTION_PROPOSED was reached exactly once — for the original attempt.
+    assert [p["to"] for p in body["session"]["phase_history"]].count("ACTION_PROPOSED") == 1

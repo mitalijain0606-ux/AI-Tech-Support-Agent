@@ -133,10 +133,17 @@ def test_allow_decision_skips_approval():
 
 
 def test_no_proposed_action_escalates_immediately():
+    """An evidence-backed diagnosis with no safe action (a server-side 500)
+    escalates. (An empty bundle is insufficient_evidence and keeps
+    investigating instead — see test_loop_driver.py.)"""
     settings.groq_api_key = ""
     session_id = _create_session("nothing seems wrong but users are complaining")
 
-    bundle = {"url": "https://github.com", "timestamp": 1726000000.0}
+    bundle = {
+        "url": "https://github.com",
+        "timestamp": 1726000000.0,
+        "network": [{"id": "ev_001", "method": "GET", "url": "https://github.com/api/x", "status": 500}],
+    }
     res = client.post(f"/api/sessions/{session_id}/diagnose", json={"bundle": bundle})
     body = res.json()
     assert body["diagnosis"]["proposed_action"] is None
