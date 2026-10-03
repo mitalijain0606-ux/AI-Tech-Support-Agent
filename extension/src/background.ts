@@ -13,12 +13,21 @@ import type {
   PolicyResponse,
   PopupCommand,
   RemediationProposal,
+  StorageCheckResult,
   SupportSession,
   ViewPhase,
 } from "./lib/types";
+import {
+  citedStorageKeys,
+  type Observation,
+  type VerificationResult,
+  verifyAgainstEvidence,
+} from "./lib/verification";
 
-// Change for a deployed backend (see docs/plan/01-phase-1-github.md).
-const BACKEND_URL = "http://localhost:8000";
+// Injected at build time by scripts/build.mjs: OPERON_BACKEND_URL, else the
+// target's "backend_url", else http://localhost:8000 for local development.
+declare const __OPERON_BACKEND_URL__: string;
+const BACKEND_URL = __OPERON_BACKEND_URL__;
 
 // What this provider build can actually do. `unregister_service_worker` is
 // intentionally absent — not implemented yet, so the Policy Engine will
@@ -39,9 +48,12 @@ const STATE_KEY = "operon_state";
 const restored: Promise<void> = chrome.storage.session
   .get(STATE_KEY)
   .then((items) => {
-    const saved = items[STATE_KEY] as { state: ExtensionState; nextEvidenceId: number } | undefined;
+    const saved = items[STATE_KEY] as
+      | { state: ExtensionState; nextEvidenceId: number; lastBundle?: EvidenceBundle | null }
+      | undefined;
     if (!saved) return;
     nextEvidenceId = saved.nextEvidenceId;
+    lastBundle = saved.lastBundle ?? null;
     state = BUSY_PHASES.has(saved.state.phase)
       ? {
           ...saved.state,
@@ -63,7 +75,7 @@ function setState(next: ExtensionState) {
       ports.delete(port);
     }
   }
-  chrome.storage.session.set({ [STATE_KEY]: { state, nextEvidenceId } }).catch(() => {});
+  chrome.storage.session.set({ [STATE_KEY]: { state, nextEvidenceId, lastBundle } }).catch(() => {});
 }
 
 function sleep(ms: number) {
@@ -104,7 +116,14 @@ function sendToContent(tabId: number, message: ContentRequest): Promise<ContentR
 let consoleEvents: ConsoleEvidence[] = [];
 let networkEvents: NetworkEvidence[] = [];
 let nextEvidenceId = 1;
+// The most recent bundle sent to the backend — the baseline a remediation's
+// verification compares against (its proposal cites ids from this bundle).
+let lastBundle: EvidenceBundle | null = null;
 const requestInfo = new Map<string, { method: string; url: string }>();
+// Set while observing across a reload: console output from the old document
+// (still running until the navigation commits) must not count as evidence
+// about the reloaded page.
+let discardConsoleUntilNavigation = false;
 
 function newId(): string {
   return `ev_${String(nextEvidenceId++).padStart(3, "0")}`;
@@ -113,7 +132,14 @@ function newId(): string {
 chrome.debugger.onEvent.addListener((_source, method, params) => {
   const p = params as Record<string, any>;
 
-  if (method === "Runtime.consoleAPICalled") {
+  if (method === "Runtime.executionContextsCleared") {
+    // Delivered in order with console events, exactly when the old
+    // document's scripts are torn down.
+    if (discardConsoleUntilNavigation) {
+      consoleEvents = [];
+      discardConsoleUntilNavigation = false;
+    }
+  } else if (method === "Runtime.consoleAPICalled") {
     if (p.type !== "error" && p.type !== "warning") return; // evidence budgeting: errors/warnings only
     const text = (p.args ?? [])
       .map((a: any) => a.value ?? a.description ?? "")
@@ -342,6 +368,7 @@ async function advance(
 async function investigateCycle(tab: chrome.tabs.Tab, session: SupportSession) {
   setState({ phase: "collecting", session });
   const bundle = await collectEvidence(tab);
+  lastBundle = bundle;
 
   setState({ phase: "investigating", session });
   const result = await callInvestigate(session.session_id, bundle);
@@ -363,6 +390,36 @@ function reloadTab(tabId: number): Promise<void> {
   });
 }
 
+// Reloads the tab with the debugger already attached, so errors thrown during
+// page load are captured, then watches for the same window evidence
+// collection uses.
+async function observeReload(tab: chrome.tabs.Tab): Promise<Observation> {
+  await attachDebugger(tab.id!);
+  try {
+    consoleEvents = [];
+    networkEvents = [];
+    requestInfo.clear();
+    discardConsoleUntilNavigation = true;
+    await reloadTab(tab.id!);
+    await sleep(4000);
+  } finally {
+    discardConsoleUntilNavigation = false;
+    await detachDebugger(tab.id!);
+  }
+  return { console: consoleEvents, network: networkEvents, storage: null };
+}
+
+// Re-reads the storage signals the content script can report. Null when the
+// tab can't be reached — verification then treats cited storage as unchecked.
+async function recheckStorage(tab: chrome.tabs.Tab): Promise<StorageCheckResult[] | null> {
+  try {
+    const check = await sendToContent(tab.id!, { type: "CHECK_STORAGE" });
+    return check.storage ? [check.storage] : [];
+  } catch {
+    return null;
+  }
+}
+
 async function executeAndVerify(
   tab: chrome.tabs.Tab,
   session: SupportSession,
@@ -373,11 +430,16 @@ async function executeAndVerify(
   setState({ phase: "executing", session, diagnosis, policy });
 
   let detail: string;
+  let observation: Observation | null = null;
   if (policy.action_id === "clear_storage_key") {
     const key = policy.validated_params.key as string;
     await sendToContent(tab.id!, { type: "CLEAR_STORAGE_KEY", key });
     detail = `cleared storage key '${key}'`;
-  } else if (policy.action_id === "reload" || policy.action_id === "inspect_page") {
+  } else if (policy.action_id === "reload") {
+    // The reload is the action; observing across it is also the verification.
+    observation = await observeReload(tab);
+    detail = "reloaded the page";
+  } else if (policy.action_id === "inspect_page") {
     detail = `no-op action '${policy.action_id}'`;
   } else {
     // Unreachable today — PROVIDER_CAPABILITIES only declares actions
@@ -393,17 +455,34 @@ async function executeAndVerify(
   const afterAction = await recordActionResult(sessionId, true, detail);
   if (afterAction.phase !== "VERIFYING") return advance(tab, afterAction, diagnosis, policy);
 
-  await reloadTab(tab.id!);
   setState({ phase: "verifying", session: afterAction, diagnosis, policy });
 
-  const check = await sendToContent(tab.id!, { type: "CHECK_STORAGE" });
-  const stillBroken = check.storage?.parse_status === "syntax_error";
-  const message = stillBroken
-    ? "Verification failed — the issue is still present."
-    : "Verified — the page initializes cleanly now.";
+  let verdict: VerificationResult;
+  if (policy.action_id === "clear_storage_key") {
+    await reloadTab(tab.id!);
+    const check = await sendToContent(tab.id!, { type: "CHECK_STORAGE" });
+    const stillBroken = check.storage?.parse_status === "syntax_error";
+    verdict = {
+      passed: !stillBroken,
+      message: stillBroken
+        ? "Verification failed — the issue is still present."
+        : "Verified — the page initializes cleanly now.",
+    };
+  } else {
+    // Never assume success: re-observe the page and check that every piece of
+    // evidence the proposal cited is actually gone.
+    const citedIds = afterAction.pending_action?.evidence_ids ?? [];
+    observation ??= await observeReload(tab);
+    if (citedStorageKeys(lastBundle, citedIds).length > 0) {
+      // After the debugger detaches, so the content script's own parse-error
+      // log can't leak into the observation.
+      observation = { ...observation, storage: await recheckStorage(tab) };
+    }
+    verdict = verifyAgainstEvidence(lastBundle, citedIds, observation);
+  }
 
   // RESOLVED, back to INVESTIGATING (retry budget left), or ESCALATED.
-  const afterVerify = await recordVerification(sessionId, !stillBroken, message);
+  const afterVerify = await recordVerification(sessionId, verdict.passed, verdict.message);
   await advance(tab, afterVerify, diagnosis, policy);
 }
 
@@ -423,15 +502,24 @@ async function handleCommand(command: PopupCommand) {
     }
 
     case "RESET": {
-      const tab = await getActiveTab();
-      await sendToContent(tab.id!, { type: "RESET_STORAGE" });
+      // Local state first: the active tab may be one the content script can't
+      // reach (outside the target, or stale), and that must never leave the
+      // popup stuck on an error screen.
+      lastBundle = null;
       setState({ phase: "idle" });
+      try {
+        const tab = await getActiveTab();
+        await sendToContent(tab.id!, { type: "RESET_STORAGE" });
+      } catch {
+        // Best-effort cleanup of the demo key only.
+      }
       return;
     }
 
     case "ASK_OPERON": {
       const tab = await getActiveTab();
       nextEvidenceId = 1;
+      lastBundle = null;
       const session = await createBackendSession(command.message);
       await investigateCycle(tab, session);
       return;

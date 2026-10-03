@@ -8,7 +8,7 @@ from operon_backend.schemas import (
     EvidenceBundle,
     StorageSignal,
 )
-from operon_backend.tripwire import TripwireHit, scan_raw_payload
+from operon_backend.tripwire import TripwireHit, redact_credentials, scan_raw_payload
 
 
 def test_tripwire_allows_clean_bundle():
@@ -116,3 +116,102 @@ def test_tripwire_rejects_bare_hex_even_when_a_url_is_also_present():
         scan_raw_payload(raw_payload)
 
     assert exc_info.value.rule == "long_hex_secret"
+
+
+# ---- git object ids vs. credentials, and free-text redaction ---------------
+
+SHA1 = "0123456789abcdef0123456789abcdef01234567"
+SHA256 = "4f53cda18c2d4e8b9a10123456789abc4f53cda18c2d4e8b9a10123456789abc"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"broken since commit {SHA1}",
+        f"Commit: {SHA1} broke the dashboard",
+        f"after merging sha {SHA1}",
+        f"HEAD is at {SHA1}",
+        f"uses actions/checkout@{SHA1}",
+        f"object sha256 {SHA256}",
+    ],
+)
+def test_git_object_ids_in_free_text_are_not_credentials(text):
+    scan_raw_payload(json.dumps({"console": text}))  # must not raise
+    assert redact_credentials(text) == (text, [])
+
+
+@pytest.mark.parametrize(
+    "text,rule",
+    [
+        (f"my token is {SHA1}", "long_hex_secret"),  # 40-hex with no git word: treated as a secret
+        (f"see commit {SHA1[:36]}", "long_hex_secret"),  # git word, but not a git object id length
+        ("auth header Bearer ghp_abcdefghijklmnop1234567890", "bearer_token"),
+        ("cookie eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdefghij", "jwt_token"),
+    ],
+)
+def test_credentials_in_free_text_are_redacted(text, rule):
+    redacted, fired = redact_credentials(text)
+    assert fired == [rule]
+    assert f"[REDACTED:{rule}]" in redacted
+    secret = text.split()[-1]
+    assert secret not in redacted
+    with pytest.raises(TripwireHit):
+        scan_raw_payload(text)
+
+
+def test_redaction_keeps_commit_sha_but_removes_token_in_same_text():
+    text = f"since commit {SHA1} it asks for Bearer ghp_abcdefghijklmnop1234567890"
+    redacted, fired = redact_credentials(text)
+    assert SHA1 in redacted
+    assert "ghp_abcdefghijklmnop1234567890" not in redacted
+    assert fired == ["bearer_token"]
+
+
+# ---- P0 review round 2: the git exemption must never weaken URL/secret detection ----
+
+ALLOWED_GIT_REFERENCES = [
+    f"commit {SHA1}",
+    f"commit {SHA256}",
+    f"HEAD is at {SHA1}",
+    f"uses: actions/checkout@{SHA1}",
+    f"pinned to octo-org/deploy-tool@{SHA256}",
+]
+
+STILL_REJECTED = [
+    f"https://x.com/file?hash={SHA256}",
+    f"https://x.com/file?sha={SHA1}",
+    f"https://x.com/file?ref={SHA1}",
+    f"https://x.com/file#rev={SHA1}",
+    f"token@{SHA1}",
+    f"user@{SHA1}",
+    f"deploy@{SHA1}",
+    f"password@{SHA1}",
+    f"https://deploy@{SHA1}.example.com",
+    f"password hash: {SHA256}",
+    f"secret hash: {SHA256}",
+    f"key hash: {SHA256}",
+    f"password sha256: {SHA256}",
+    f"the secret commit {SHA1}",
+]
+
+
+@pytest.mark.parametrize("text", ALLOWED_GIT_REFERENCES)
+def test_legitimate_git_references_are_allowed(text):
+    scan_raw_payload(json.dumps({"console": text}))
+    assert redact_credentials(text) == (text, [])
+
+
+@pytest.mark.parametrize("text", STILL_REJECTED)
+def test_git_exemption_never_overrides_url_or_secret_detection(text):
+    with pytest.raises(TripwireHit) as exc_info:
+        scan_raw_payload(json.dumps({"evidence": text}))
+    assert exc_info.value.rule == "long_hex_secret"
+    redacted, fired = redact_credentials(text)
+    assert fired == ["long_hex_secret"]
+    assert SHA1 not in redacted and SHA256 not in redacted
+
+
+def test_hex_in_url_path_is_still_allowed_but_not_in_its_query():
+    scan_raw_payload(f"https://github.com/octo/repo/commit/{SHA1}")
+    with pytest.raises(TripwireHit):
+        scan_raw_payload(f"https://github.com/octo/repo/commit/{SHA1}?token={SHA256}")

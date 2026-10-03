@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -35,6 +36,8 @@ from operon_backend.session_service import (
 )
 from operon_backend.state_machine import IllegalTransition, SessionPhase
 from operon_backend.tripwire import TripwireHit, scan_raw_payload
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -175,7 +178,17 @@ async def session_diagnose_endpoint(session_id: str, request: Request, db: DBSes
 
     query = build_query(session.user_issue, evidence_req.bundle)
     tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
-    retrieved = search(db, query, tenant_id=tenant_id)
+    # Retrieval is precedent, never evidence (AGENT_ARCHITECTURE.md), so if the
+    # embedding model or store is unavailable the investigation continues
+    # without it rather than failing the request.
+    retrieval_error: str | None = None
+    try:
+        retrieved = search(db, query, tenant_id=tenant_id)
+    except Exception as exc:  # noqa: BLE001 — any embedder/store failure (network, ONNX, OS, DB)
+        logger.warning("Knowledge search failed for session %s: %s", session_id, type(exc).__name__)
+        db.rollback()  # in case the failure came from the database, not the embedder
+        retrieved = []
+        retrieval_error = type(exc).__name__
     knowledge_context = [
         {"chunk_id": r.chunk_id, "content": r.content_text, "score": round(r.score, 3)} for r in retrieved
     ]
@@ -186,7 +199,7 @@ async def session_diagnose_endpoint(session_id: str, request: Request, db: DBSes
         return JSONResponse(status_code=400, content={"detail": f"Diagnosis failed: {exc}"})
 
     try:
-        session = record_diagnosis(db, session, evidence_req.bundle, diagnosis, retrieved)
+        session = record_diagnosis(db, session, evidence_req.bundle, diagnosis, retrieved, retrieval_error)
     except IllegalTransition as exc:
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 

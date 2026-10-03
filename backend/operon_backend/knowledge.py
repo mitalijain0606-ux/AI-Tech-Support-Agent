@@ -10,6 +10,7 @@ Manages all knowledge base corpora:
 6. Resolved session history (learning loop) with multi-tenant isolation
 """
 
+import logging
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -21,7 +22,9 @@ from sqlalchemy.orm import Session as DBSession
 
 from operon_backend.db_models import KnowledgeChunk, SessionRecord
 from operon_backend.embeddings import embed, embed_batch
-from operon_backend.tripwire import scan_raw_payload
+from operon_backend.tripwire import redact_credentials
+
+logger = logging.getLogger(__name__)
 
 KB_DIR_DEFAULT = Path(__file__).resolve().parents[2] / "docs" / "knowledge-base"
 FRONT_MATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
@@ -580,11 +583,20 @@ def record_resolved_session_to_kb(
 
     content_text = "\n".join(lines)
 
-    # Tripwire guardrail: never embed a bundle that contains unsanitized credentials
-    scan_raw_payload(content_text)
+    # Never embed a credential — but never let a credential-shaped string
+    # (or a false positive) stop a session from finishing either: redact it.
+    content_text, redactions = redact_credentials(content_text)
+    if redactions:
+        logger.warning("Redacted credential-shaped value(s) from session history: %s", ", ".join(redactions))
 
     chunk_id = f"hist_{session.id}"
-    vec = embed(content_text)
+    # Best-effort: the learning loop is an add-on to a finished session, so an
+    # unavailable embedding model skips it instead of failing the request.
+    try:
+        vec = embed(content_text)
+    except Exception as exc:  # noqa: BLE001 — any embedder/store failure (network, ONNX, OS, DB)
+        logger.warning("Skipped saving session %s to the knowledge base: embedding failed (%s)", session.id, type(exc).__name__)
+        return None
     metadata = {
         "tenant_id": tenant_id or "shared",
         "session_id": session.id,

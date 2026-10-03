@@ -6,6 +6,7 @@ one straight pass per AGENT_ARCHITECTURE.md's own scope note: this is
 (that's Phase 3).
 """
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -34,16 +35,30 @@ from operon_backend.schemas import (
     RemediationProposal,
 )
 from operon_backend.state_machine import IllegalTransition, SessionPhase, transition
+from operon_backend.tripwire import redact_credentials
+
+logger = logging.getLogger(__name__)
 
 
 def create_session(db: DBSession, user_issue: str, source: str = "github") -> SessionRecord:
+    # The user's own words are free text that reaches the database, the LLM,
+    # retrieval and the knowledge base — redact anything credential-shaped
+    # here, once, so no later step ever sees the raw value.
+    user_issue, redactions = redact_credentials(user_issue)
+    if redactions:
+        logger.warning("Redacted credential-shaped value(s) from user_issue: %s", ", ".join(redactions))
     record = SessionRecord(
         id=str(uuid.uuid4()),
         user_issue=user_issue,
         source=source,
         phase=SessionPhase.UNDERSTANDING.value,
         conversation_history=[
-            {"role": "user", "content": user_issue, "at": datetime.now(UTC).isoformat()}
+            {
+                "role": "user",
+                "content": user_issue,
+                "at": datetime.now(UTC).isoformat(),
+                "redaction_applied": redactions,
+            }
         ],
     )
     db.add(record)
@@ -109,6 +124,7 @@ def record_diagnosis(
     bundle: EvidenceBundle,
     diagnosis: Diagnosis,
     retrieved: list[RetrievedChunk] | None = None,
+    retrieval_error: str | None = None,
 ) -> SessionRecord:
     if session.phase not in INVESTIGABLE_PHASES:
         raise IllegalTransition(
@@ -124,7 +140,9 @@ def record_diagnosis(
     tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
 
     if session.phase == SessionPhase.UNDERSTANDING.value:
-        if retrieved:
+        if retrieval_error:
+            lookup_reason = f"knowledge search unavailable ({retrieval_error}); continuing without retrieved precedent"
+        elif retrieved:
             summary = ", ".join(f"{r.chunk_id} ({r.score:.2f})" for r in retrieved)
             lookup_reason = f"found {len(retrieved)} relevant knowledge chunk(s): {summary}"
         else:
