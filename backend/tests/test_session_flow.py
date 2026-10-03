@@ -88,11 +88,21 @@ def test_require_approval_path_reaches_resolved():
     assert res.status_code == 200
     assert res.json()["phase"] == "EXECUTING"
 
-    res = client.post(f"/api/sessions/{session_id}/action-result", json={"succeeded": True, "detail": "key removed"})
+    res = client.post(
+        f"/api/sessions/{session_id}/action-result",
+        json={"action_id": "clear_storage_key", "succeeded": True, "detail": "key removed"},
+    )
     assert res.status_code == 200
     assert res.json()["phase"] == "VERIFYING"
 
-    res = client.post(f"/api/sessions/{session_id}/verify", json={"passed": True, "message": "no more SyntaxError"})
+    # The backend decides from what the provider observed: key gone, cited error absent.
+    res = client.post(
+        f"/api/sessions/{session_id}/verify",
+        json={
+            "action_id": "clear_storage_key",
+            "observation": {"console": [], "network": [], "storage": [{"key": "operon_demo_cache", "present": False, "parse_status": "empty"}]},
+        },
+    )
     assert res.status_code == 200
     final = res.json()
     assert final["phase"] == "RESOLVED"
@@ -266,15 +276,22 @@ def test_credential_in_user_issue_is_redacted_before_db_llm_and_logs(monkeypatch
     settings.groq_api_key = ""
     seen_by_llm: list[str] = []
 
-    from operon_backend import main as main_module
+    from operon_backend import investigation
 
-    real_diagnose = main_module.diagnose
+    real_run = investigation.run_diagnosis
+    seen_by_search: list[str] = []
 
-    async def spy_diagnose(message, bundle, knowledge_context=None):
+    async def spy_run(message, bundle, knowledge_context=None, **kwargs):
         seen_by_llm.append(message)
-        return await real_diagnose(message, bundle, knowledge_context)
+        seen_by_llm.append(str(kwargs.get("history")))
+        return await real_run(message, bundle, knowledge_context, **kwargs)
 
-    monkeypatch.setattr("operon_backend.main.diagnose", spy_diagnose)
+    def spy_search(db, query, **kwargs):
+        seen_by_search.append(query)
+        return []
+
+    monkeypatch.setattr("operon_backend.investigation.run_diagnosis", spy_run)
+    monkeypatch.setattr("operon_backend.investigation.search", spy_search)
     monkeypatch.setattr("operon_backend.knowledge.embed", _fake_embed)
 
     with caplog.at_level(logging.DEBUG):
@@ -289,6 +306,7 @@ def test_credential_in_user_issue_is_redacted_before_db_llm_and_logs(monkeypatch
         assert res.json()["session"]["phase"] == "ESCALATED"
 
     assert seen_by_llm and all(TOKEN not in m for m in seen_by_llm)
+    assert seen_by_search and all(TOKEN not in q for q in seen_by_search)
     assert TOKEN not in caplog.text
 
     db = SessionLocal()
@@ -354,7 +372,7 @@ def test_investigate_continues_without_retrieval_when_search_fails(monkeypatch):
     def broken_search(*args, **kwargs):
         raise RuntimeError("embedding model unavailable")
 
-    monkeypatch.setattr("operon_backend.main.search", broken_search)
+    monkeypatch.setattr("operon_backend.investigation.search", broken_search)
     session_id = _create_session("my dashboard looks corrupted")
     bundle = {
         "url": "https://github.com",
@@ -375,7 +393,7 @@ def test_session_still_resolves_when_saving_history_cannot_embed(monkeypatch):
     def broken_embed(_text):
         raise RuntimeError("embedding model unavailable")
 
-    monkeypatch.setattr("operon_backend.main.search", lambda *a, **k: [])
+    monkeypatch.setattr("operon_backend.investigation.search", lambda *a, **k: [])
     monkeypatch.setattr("operon_backend.knowledge.embed", broken_embed)
     session_id = _create_session("my dashboard looks corrupted")
     bundle = {
@@ -389,7 +407,10 @@ def test_session_still_resolves_when_saving_history_cannot_embed(monkeypatch):
         json={"action_id": "clear_storage_key", "params": {"key": "operon_demo_cache"}, "provider_capabilities": ["clear_storage_key"]},
     )
     client.post(f"/api/sessions/{session_id}/approve", json={"approved": True})
-    client.post(f"/api/sessions/{session_id}/action-result", json={"succeeded": True, "detail": "cleared"})
-    res = client.post(f"/api/sessions/{session_id}/verify", json={"passed": True, "message": "clean"})
+    client.post(f"/api/sessions/{session_id}/action-result", json={"action_id": "clear_storage_key", "succeeded": True, "detail": "cleared"})
+    res = client.post(
+        f"/api/sessions/{session_id}/verify",
+        json={"action_id": "clear_storage_key", "observation": {"storage": [{"key": "operon_demo_cache", "present": False, "parse_status": "empty"}]}},
+    )
     assert res.status_code == 200
     assert res.json()["phase"] == "RESOLVED"

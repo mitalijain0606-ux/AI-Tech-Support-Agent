@@ -44,6 +44,7 @@ TRANSITIONS: dict[SessionPhase, set[SessionPhase]] = {
     SessionPhase.INVESTIGATING: {
         SessionPhase.HYPOTHESIS_FORMED,
         SessionPhase.KNOWLEDGE_LOOKUP,
+        SessionPhase.NEED_INFORMATION,  # reasoning concluded more evidence is needed
         SessionPhase.ESCALATED,
     },
     SessionPhase.HYPOTHESIS_FORMED: {

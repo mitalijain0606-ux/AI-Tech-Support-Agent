@@ -1,3 +1,8 @@
+// Mirrors backend/operon_backend/schemas.py. The backend is authoritative for
+// every session field; the extension only renders it and does what it asks.
+
+// ---- Evidence -------------------------------------------------------------------
+
 export interface ConsoleEvidence {
   id: string;
   level: "error" | "warn" | "info";
@@ -24,24 +29,56 @@ export interface CookieSignal {
   // NOTE: a cookie's value is intentionally never a field here — Contract 1a.
 }
 
+export type ParseStatus = "valid_json" | "syntax_error" | "not_json" | "empty";
+
 export interface StorageSignal {
   id: string;
   key: string;
   present: boolean;
-  parse_status: "valid_json" | "syntax_error" | "not_json" | "empty";
+  parse_status: ParseStatus;
   error_message?: string;
   // NOTE: the raw stored value is intentionally never a field here — Contract 1a.
 }
 
+export interface PageSignal {
+  id: string;
+  url_path: string;
+  title?: string | null;
+  ready_state?: string | null;
+  service_worker_controlled: boolean;
+  service_worker_scopes: string[]; // scope paths only
+  selector?: string | null;
+  selector_matches?: number | null;
+}
+
+export type Collector = "console" | "network" | "storage" | "cookies" | "page" | "reload_observe";
+
 export interface EvidenceBundle {
   url: string;
   timestamp: number;
+  bundle_id: string;
+  request_id: string | null;
+  collectors: Collector[];
+  collection_errors: string[];
   console: ConsoleEvidence[];
   network: NetworkEvidence[];
   cookies: CookieSignal[];
   storage: StorageSignal[];
+  page: PageSignal[];
   redaction_applied: string[];
 }
+
+export interface EvidenceRequest {
+  request_id: string;
+  purpose: "initial" | "information" | "retry";
+  collectors: Collector[];
+  params: { storage_keys: string[]; selector: string | null; observe_ms: number };
+  reason: string;
+  requires_user_action: boolean;
+  cycle: number;
+}
+
+// ---- Diagnosis + remediation ------------------------------------------------------
 
 export interface ProposedAction {
   action_id: string;
@@ -69,6 +106,8 @@ export interface Diagnosis {
   confidence: number;
   resolvable_automatically: boolean;
   proposed_action: ProposedAction | null;
+  information_request: { collectors: string[]; reason: string; requires_user_action: boolean } | null;
+  engine: "groq" | "rule_based" | (string & {});
 }
 
 export interface PolicyDecision {
@@ -78,22 +117,76 @@ export interface PolicyDecision {
   validated_params: Record<string, unknown>;
 }
 
-// ---- Backend SupportSession (backend/operon_backend/schemas.py SessionOut) --
+export interface CitedEvidence {
+  console: ConsoleEvidence[];
+  network: NetworkEvidence[];
+  cookies: CookieSignal[];
+  storage: StorageSignal[];
+  page: PageSignal[];
+}
+
+export interface VerificationPlan {
+  strategy: "storage_recheck" | "reobserve_cited" | "service_worker_recheck";
+  cited_evidence: CitedEvidence;
+  storage_keys: string[];
+  service_worker_scope: string | null;
+  observe_ms: number;
+}
+
+export interface RemediationProposal {
+  proposal_id: string;
+  diagnosis: string;
+  evidence_ids: string[];
+  knowledge_refs: string[];
+  action_id: string;
+  parameters: Record<string, unknown>;
+  target: Record<string, unknown>;
+  rationale: string;
+  expected_effect: string;
+  risk: string;
+  verification_predicate: string;
+  verification: VerificationPlan | null;
+  requires_approval: boolean; // informational only — the Policy Engine decides
+  attempt: number;
+  retry_of: string | null;
+  retry_reason: string | null;
+}
+
+export interface StorageState {
+  key: string;
+  present: boolean;
+  parse_status: ParseStatus;
+  error_message?: string;
+}
+
+// What the extension observed after an action. The backend decides what it means.
+export interface VerificationObservation {
+  console: ConsoleEvidence[];
+  network: NetworkEvidence[];
+  storage?: StorageState[] | null;
+  service_worker_scopes?: string[] | null;
+  observed_ms?: number | null;
+  error?: string | null;
+}
+
+// ---- Backend SupportSession -----------------------------------------------------------
 
 // backend/operon_backend/state_machine.py SessionPhase — the source of truth.
-export type BackendPhase =
-  | "UNDERSTANDING"
-  | "KNOWLEDGE_LOOKUP"
-  | "NEED_INFORMATION"
-  | "INVESTIGATING"
-  | "HYPOTHESIS_FORMED"
-  | "DIAGNOSING"
-  | "ACTION_PROPOSED"
-  | "WAITING_FOR_APPROVAL"
-  | "EXECUTING"
-  | "VERIFYING"
-  | "RESOLVED"
-  | "ESCALATED";
+export const BACKEND_PHASES = [
+  "UNDERSTANDING",
+  "KNOWLEDGE_LOOKUP",
+  "NEED_INFORMATION",
+  "INVESTIGATING",
+  "HYPOTHESIS_FORMED",
+  "DIAGNOSING",
+  "ACTION_PROPOSED",
+  "WAITING_FOR_APPROVAL",
+  "EXECUTING",
+  "VERIFYING",
+  "RESOLVED",
+  "ESCALATED",
+] as const;
+export type BackendPhase = (typeof BACKEND_PHASES)[number];
 
 export interface Hypothesis {
   hypothesis_id: string;
@@ -105,17 +198,6 @@ export interface Hypothesis {
   status: "candidate" | "supported" | "contradicted" | "confirmed" | "rejected";
 }
 
-export interface RemediationProposal {
-  diagnosis: string;
-  evidence_ids: string[];
-  action_id: string;
-  parameters: Record<string, unknown>;
-  expected_effect: string;
-  risk: string;
-  verification_predicate: string;
-  requires_approval: boolean; // informational only — the Policy Engine decides
-}
-
 export interface PhaseTransition {
   from: BackendPhase;
   to: BackendPhase;
@@ -124,6 +206,7 @@ export interface PhaseTransition {
 }
 
 export interface AttemptedAction {
+  proposal_id?: string;
   action_id: string | null;
   params?: Record<string, unknown>;
   succeeded: boolean;
@@ -133,9 +216,25 @@ export interface AttemptedAction {
 }
 
 export interface VerificationRecord {
+  outcome: "passed" | "failed" | "inconclusive" | "not_run";
   passed: boolean;
   message: string;
   at: string;
+}
+
+export interface EscalationRecord {
+  reason: string;
+  resolution_state: string;
+  guidance: string | null;
+  at: string;
+}
+
+export interface ActivityEntry {
+  seq: number;
+  at: string;
+  kind: string;
+  phase: BackendPhase;
+  summary: string;
 }
 
 export interface SupportSession {
@@ -146,21 +245,22 @@ export interface SupportSession {
   hypotheses: Hypothesis[];
   current_hypothesis_id: string | null;
   knowledge_references: string[];
+  evidence_request: EvidenceRequest | null;
+  investigation_cycle: number;
   pending_action: RemediationProposal | null;
+  policy_decision: (PolicyDecision & { proposal_id: string }) | null;
   verification_state: VerificationRecord | null;
+  escalation_state: EscalationRecord | null;
   resolution_state: string | null;
   confidence: number;
   phase_history: PhaseTransition[];
-  diagnostic_steps: Record<string, unknown>[];
   attempted_actions: AttemptedAction[];
-  step_count: number;
-  tool_call_count: number;
-  llm_call_count: number;
+  activity: ActivityEntry[];
   action_attempt_count: number;
 }
 
 // POST /api/sessions/{id}/investigate. `diagnosis` is null when the session
-// was escalated (hard limit) before any diagnosis was produced.
+// was escalated before any (grounded) diagnosis was produced.
 export interface InvestigateResponse {
   diagnosis: Diagnosis | null;
   session: SupportSession;
@@ -172,7 +272,7 @@ export interface PolicyResponse {
   session: SupportSession;
 }
 
-// ---- Extension view state -------------------------------------------------
+// ---- Extension view state ---------------------------------------------------------------
 
 // What the popup shows. The busy phases are the extension's own in-flight
 // work; every other phase is derived from SupportSession.phase in
@@ -208,19 +308,37 @@ export type PopupCommand =
   | { type: "APPROVE" }
   | { type: "DENY" };
 
+// ---- Content-script messages --------------------------------------------------------------
+
 export interface StorageCheckResult {
   key: string;
   present: boolean;
-  parse_status: StorageSignal["parse_status"];
+  parse_status: ParseStatus;
   error_message?: string;
+}
+
+export interface PageInspection {
+  url_path: string;
+  title: string | null;
+  ready_state: string;
+  service_worker_controlled: boolean;
+  service_worker_scopes: string[];
+  selector: string | null;
+  selector_matches: number | null;
 }
 
 export type ContentRequest =
   | { type: "SEED" }
   | { type: "RESET_STORAGE" }
-  | { type: "CHECK_STORAGE" }
-  | { type: "CLEAR_STORAGE_KEY"; key: string };
+  | { type: "CHECK_STORAGE"; keys?: string[] }
+  | { type: "CLEAR_STORAGE_KEY"; key: string }
+  | { type: "INSPECT_PAGE"; selector?: string | null }
+  | { type: "UNREGISTER_SERVICE_WORKER"; scope?: string | null };
 
 export interface ContentResponse {
-  storage?: StorageCheckResult;
+  storage?: StorageCheckResult[];
+  page?: PageInspection;
+  unregistered?: number;
+  remaining_scopes?: string[];
+  error?: string;
 }

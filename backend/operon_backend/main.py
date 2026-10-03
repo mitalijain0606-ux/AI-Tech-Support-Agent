@@ -9,9 +9,10 @@ from sqlalchemy.orm import Session as DBSession
 
 from operon_backend.db import get_db, init_db
 from operon_backend.db_models import SessionRecord
+from operon_backend.evidence import EvidenceRejected
+from operon_backend.investigation import run_cycle
 from operon_backend.llm import LLMError, diagnose
 from operon_backend.policy import evaluate
-from operon_backend.retrieval import build_query, search
 from operon_backend.schemas import (
     ActionResultRequest,
     ApprovalRequest,
@@ -21,17 +22,17 @@ from operon_backend.schemas import (
     PolicyDecision,
     PolicyRequest,
     SessionOut,
+    SessionPolicyRequest,
     SubmitEvidenceRequest,
     VerifyRequest,
 )
 from operon_backend.session_service import (
-    begin_investigation_cycle,
+    RequestMismatch,
+    apply_policy,
     create_session,
     get_session,
     record_action_result,
     record_approval,
-    record_diagnosis,
-    record_policy,
     record_verification,
 )
 from operon_backend.state_machine import IllegalTransition, SessionPhase
@@ -104,7 +105,7 @@ async def diagnose_endpoint(request: Request):
         )
 
 
-# ---- SupportSession API — AGENT_ARCHITECTURE.md Phase 1 --------------------
+# ---- SupportSession API ------------------------------------------------------------
 
 
 def _serialize(session: SessionRecord) -> SessionOut:
@@ -113,20 +114,34 @@ def _serialize(session: SessionRecord) -> SessionOut:
         phase=session.phase,
         user_issue=session.user_issue,
         issue_category=session.issue_category,
-        hypotheses=session.hypotheses,
+        hypotheses=session.hypotheses or [],
         current_hypothesis_id=session.current_hypothesis_id,
-        knowledge_references=session.knowledge_references,
+        knowledge_references=session.knowledge_references or [],
+        evidence_request=session.evidence_request,
+        evidence_bundles=[
+            {k: r.get(k) for k in ("bundle_id", "request_id", "purpose", "cycle", "after_attempt", "collectors",
+                                   "collection_errors", "item_count", "received_at")}
+            for r in (session.collected_evidence or [])
+            if "bundle" in r
+        ],
+        investigation_cycle=session.investigation_cycle or 0,
+        diagnoses=session.diagnoses or [],
+        retrievals=session.retrievals or [],
         pending_action=session.pending_action,
+        policy_decision=session.policy_decision,
+        approval=session.approval,
         verification_state=session.verification_state,
+        escalation_state=session.escalation_state,
         resolution_state=session.resolution_state,
-        confidence=session.confidence,
-        phase_history=session.phase_history,
-        diagnostic_steps=session.diagnostic_steps,
-        attempted_actions=session.attempted_actions,
-        step_count=session.step_count,
-        tool_call_count=session.tool_call_count,
-        llm_call_count=session.llm_call_count,
-        action_attempt_count=session.action_attempt_count,
+        confidence=session.confidence or 0.0,
+        phase_history=session.phase_history or [],
+        diagnostic_steps=session.diagnostic_steps or [],
+        attempted_actions=session.attempted_actions or [],
+        activity=session.activity or [],
+        step_count=session.step_count or 0,
+        tool_call_count=session.tool_call_count or 0,
+        llm_call_count=session.llm_call_count or 0,
+        action_attempt_count=session.action_attempt_count or 0,
     )
 
 
@@ -137,9 +152,13 @@ def _get_session_or_404(db: DBSession, session_id: str) -> SessionRecord:
     return session
 
 
+def _conflict(exc: Exception) -> JSONResponse:
+    return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+
 @app.post("/api/sessions", response_model=SessionOut)
 async def create_session_endpoint(body: CreateSessionRequest, db: DBSession = Depends(get_db)):
-    session = create_session(db, body.user_issue, body.source)
+    session = create_session(db, body.user_issue, body.source, body.provider_capabilities, body.collectors)
     return _serialize(session)
 
 
@@ -149,8 +168,10 @@ async def get_session_endpoint(session_id: str, db: DBSession = Depends(get_db))
     return _serialize(session)
 
 
-@app.post("/api/sessions/{session_id}/diagnose")
-async def session_diagnose_endpoint(session_id: str, request: Request, db: DBSession = Depends(get_db)):
+@app.post("/api/sessions/{session_id}/investigate")
+async def session_investigate_endpoint(session_id: str, request: Request, db: DBSession = Depends(get_db)):
+    """Submits the evidence the session asked for and runs one bounded
+    investigation cycle (understanding → retrieval → diagnosis → decision)."""
     session = _get_session_or_404(db, session_id)
 
     body_bytes = await request.body()
@@ -166,71 +187,36 @@ async def session_diagnose_endpoint(session_id: str, request: Request, db: DBSes
     except (ValidationError, ValueError) as exc:
         return JSONResponse(status_code=422, content={"detail": f"Invalid request body: {exc}"})
 
-    # Phase and hard-limit gate — before any retrieval or LLM work is spent.
     try:
-        limit_exc = begin_investigation_cycle(db, session)
+        diagnosis = await run_cycle(db, session, evidence_req.bundle)
     except IllegalTransition as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-    if limit_exc:
-        # No diagnosis was produced; the session is now ESCALATED and its
-        # resolution_state / phase_history say which limit was hit.
-        return {"diagnosis": None, "session": _serialize(session)}
-
-    query = build_query(session.user_issue, evidence_req.bundle)
-    tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
-    # Retrieval is precedent, never evidence (AGENT_ARCHITECTURE.md), so if the
-    # embedding model or store is unavailable the investigation continues
-    # without it rather than failing the request.
-    retrieval_error: str | None = None
-    try:
-        retrieved = search(db, query, tenant_id=tenant_id)
-    except Exception as exc:  # noqa: BLE001 — any embedder/store failure (network, ONNX, OS, DB)
-        logger.warning("Knowledge search failed for session %s: %s", session_id, type(exc).__name__)
-        db.rollback()  # in case the failure came from the database, not the embedder
-        retrieved = []
-        retrieval_error = type(exc).__name__
-    knowledge_context = [
-        {"chunk_id": r.chunk_id, "content": r.content_text, "score": round(r.score, 3)} for r in retrieved
-    ]
-
-    try:
-        diagnosis = await diagnose(session.user_issue, evidence_req.bundle, knowledge_context)
+        return _conflict(exc)
+    except EvidenceRejected as exc:
+        return JSONResponse(status_code=409 if exc.conflict else 422, content={"detail": exc.detail})
     except LLMError as exc:
         return JSONResponse(status_code=400, content={"detail": f"Diagnosis failed: {exc}"})
 
-    try:
-        session = record_diagnosis(db, session, evidence_req.bundle, diagnosis, retrieved, retrieval_error)
-    except IllegalTransition as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-
+    db.refresh(session)
     # The response must agree with the session: a proposed action is only
-    # returned when the session actually reached ACTION_PROPOSED (not when it
-    # escalated, e.g. on a limit or an already-failed remediation).
-    if diagnosis.proposed_action is not None and session.phase != SessionPhase.ACTION_PROPOSED.value:
+    # returned when the session actually reached ACTION_PROPOSED.
+    if diagnosis is not None and diagnosis.proposed_action is not None and session.phase != SessionPhase.ACTION_PROPOSED.value:
         diagnosis = diagnosis.model_copy(update={"proposed_action": None, "resolvable_automatically": False})
-
     return {"diagnosis": diagnosis, "session": _serialize(session)}
 
 
-@app.post("/api/sessions/{session_id}/investigate")
-async def session_investigate_endpoint(session_id: str, request: Request, db: DBSession = Depends(get_db)):
-    """Submits evidence or drives another investigation cycle for an ongoing session."""
-    return await session_diagnose_endpoint(session_id, request, db)
+# Kept as an alias of /investigate for existing clients.
+@app.post("/api/sessions/{session_id}/diagnose")
+async def session_diagnose_endpoint(session_id: str, request: Request, db: DBSession = Depends(get_db)):
+    return await session_investigate_endpoint(session_id, request, db)
 
 
 @app.post("/api/sessions/{session_id}/policy")
-async def session_policy_endpoint(session_id: str, request: PolicyRequest, db: DBSession = Depends(get_db)):
+async def session_policy_endpoint(session_id: str, body: SessionPolicyRequest, db: DBSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
-    decision = evaluate(
-        action_id=request.action_id,
-        params=request.params,
-        provider_capabilities=request.provider_capabilities,
-    )
     try:
-        session = record_policy(db, session, decision)
-    except IllegalTransition as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
-
+        decision = apply_policy(db, session, body)
+    except (IllegalTransition, RequestMismatch) as exc:
+        return _conflict(exc)
     return {"policy": decision, "session": _serialize(session)}
 
 
@@ -240,7 +226,7 @@ async def session_approve_endpoint(session_id: str, body: ApprovalRequest, db: D
     try:
         session = record_approval(db, session, body.approved)
     except IllegalTransition as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return _conflict(exc)
     return _serialize(session)
 
 
@@ -248,17 +234,28 @@ async def session_approve_endpoint(session_id: str, body: ApprovalRequest, db: D
 async def session_action_result_endpoint(session_id: str, body: ActionResultRequest, db: DBSession = Depends(get_db)):
     session = _get_session_or_404(db, session_id)
     try:
-        session = record_action_result(db, session, body.succeeded, body.detail)
-    except IllegalTransition as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        session = record_action_result(db, session, body.action_id, body.succeeded, body.detail)
+    except (IllegalTransition, RequestMismatch) as exc:
+        return _conflict(exc)
     return _serialize(session)
 
 
 @app.post("/api/sessions/{session_id}/verify")
-async def session_verify_endpoint(session_id: str, body: VerifyRequest, db: DBSession = Depends(get_db)):
+async def session_verify_endpoint(session_id: str, request: Request, db: DBSession = Depends(get_db)):
+    """The provider reports what it observed after the action; the backend
+    decides whether the cited problem is gone."""
     session = _get_session_or_404(db, session_id)
+    raw_body = (await request.body()).decode("utf-8", errors="replace")
     try:
-        session = record_verification(db, session, body.passed, body.message)
-    except IllegalTransition as exc:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        scan_raw_payload(raw_body)
+    except TripwireHit as exc:
+        return JSONResponse(status_code=422, content={"detail": f"Security Tripwire Triggered: {exc.detail}"})
+    try:
+        body = VerifyRequest.model_validate_json(raw_body)
+    except (ValidationError, ValueError) as exc:
+        return JSONResponse(status_code=422, content={"detail": f"Invalid request body: {exc}"})
+    try:
+        session = record_verification(db, session, body.action_id, body.observation)
+    except (IllegalTransition, RequestMismatch) as exc:
+        return _conflict(exc)
     return _serialize(session)

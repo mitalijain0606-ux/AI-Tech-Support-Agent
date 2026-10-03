@@ -54,6 +54,21 @@ class SessionRecord(Base):
     llm_call_count = Column(Integer, default=0)
     action_attempt_count = Column(Integer, default=0)
 
+    # Investigation loop (see investigation.py). Each has one producer and is
+    # read back by the next stage, the API, or the history view:
+    # - evidence_request: issued by the backend, answered by the provider
+    # - investigation_cycle: evidence submissions so far (hard-limited)
+    # - diagnoses / retrievals: per-cycle records, fed back to the model as history
+    # - policy_decision / approval: gate execution of the pending action
+    # - activity: append-only, secret-free record of every stage
+    evidence_request = Column(MutableDict.as_mutable(JSON), nullable=True)
+    investigation_cycle = Column(Integer, default=0)
+    diagnoses = Column(MutableList.as_mutable(JSON), default=list)
+    retrievals = Column(MutableList.as_mutable(JSON), default=list)
+    policy_decision = Column(MutableDict.as_mutable(JSON), nullable=True)
+    approval = Column(MutableDict.as_mutable(JSON), nullable=True)
+    activity = Column(MutableList.as_mutable(JSON), default=list)
+
 
 class KnowledgeChunk(Base):
     """The RAG store from production-architecture.md. `embedding` is a

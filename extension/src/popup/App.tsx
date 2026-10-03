@@ -100,6 +100,8 @@ export function App() {
   const session = state.session;
   const pending = session?.pending_action ?? null;
   const currentHypothesis = session?.hypotheses.find((h) => h.hypothesis_id === session.current_hypothesis_id);
+  const evidenceRequest = session?.evidence_request ?? null;
+  const recentActivity = (session?.activity ?? []).slice(-8);
 
   return (
     <div className="w-[380px] bg-white text-neutral-950">
@@ -163,23 +165,35 @@ export function App() {
         {state.phase === "needs_more_evidence" && (
           <div className="flex flex-col gap-3">
             <div className="rounded-md border border-neutral-200 bg-neutral-50 p-3">
-              <p className="text-[13px] font-semibold text-neutral-900">Not enough evidence yet</p>
+              <p className="text-[13px] font-semibold text-neutral-900">
+                {evidenceRequest?.purpose === "retry" ? "That didn't fix it — looking again" : "Not enough evidence yet"}
+              </p>
               <p className="mt-1.5 text-[12px] leading-relaxed text-neutral-600">{state.message}</p>
+              {evidenceRequest && (
+                <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                  <span className="font-mono text-[10px] uppercase tracking-wider text-neutral-400">Will collect</span>
+                  {evidenceRequest.collectors.map((c) => (
+                    <Pill key={c}>{c}</Pill>
+                  ))}
+                </div>
+              )}
               {currentHypothesis && (
                 <p className="mt-2 text-[11.5px] text-neutral-500">
                   Working hypothesis ({currentHypothesis.status}): {currentHypothesis.description}
                 </p>
               )}
             </div>
-            <p className="text-[11.5px] text-neutral-500">
-              Reproduce the problem in this tab, then investigate again — Operon will watch for a few seconds.
-            </p>
+            {evidenceRequest?.requires_user_action && (
+              <p className="text-[11.5px] text-neutral-500">
+                Reproduce the problem in this tab, then continue — Operon will watch for a few seconds.
+              </p>
+            )}
             <div className="flex gap-2">
               <Button variant="secondary" onClick={() => send({ type: "RESET" })}>
                 Reset
               </Button>
               <Button variant="primary" full onClick={() => send({ type: "INVESTIGATE_AGAIN" })}>
-                Investigate again
+                Collect evidence
               </Button>
             </div>
           </div>
@@ -216,6 +230,13 @@ export function App() {
               {Object.entries(pending.parameters).length > 0 && (
                 <span className="ml-1.5 font-mono text-[11px] text-neutral-400">{JSON.stringify(pending.parameters)}</span>
               )}
+              <p className="mt-1 text-[11px] text-neutral-500">Expected: {pending.expected_effect}</p>
+              {pending.verification && (
+                <p className="mt-0.5 text-[11px] text-neutral-500">Verified by: {pending.verification.strategy.replace(/_/g, " ")}</p>
+              )}
+              {pending.attempt > 1 && (
+                <p className="mt-0.5 text-[11px] text-neutral-500">Attempt {pending.attempt} — previous attempt: {pending.retry_reason}</p>
+              )}
               {state.policy && <p className="mt-1 text-[11px] text-neutral-500">{state.policy.reason}</p>}
             </div>
 
@@ -231,19 +252,32 @@ export function App() {
         )}
 
         {(state.phase === "resolved" || state.phase === "escalated" || state.phase === "error") && (
-          <div className="flex h-[188px] flex-col items-center justify-center gap-3 text-center">
+          <div className="flex min-h-[160px] flex-col items-center justify-center gap-3 text-center">
             {state.phase === "resolved" && session?.resolution_state !== "declined_by_user" && (
               <CheckIcon className="h-7 w-7 text-neutral-950" />
             )}
             {state.phase === "escalated" && <EscalateIcon className="h-7 w-7 text-neutral-950" />}
             {state.phase === "error" && <AlertIcon className="h-7 w-7 text-neutral-950" />}
-            <p className="max-w-[280px] text-[12.5px] text-neutral-600">
+            <p className="max-w-[300px] whitespace-pre-line text-[12.5px] text-neutral-600">
               {state.message || state.diagnosis?.reasoning || "Done."}
             </p>
             <Button variant="secondary" onClick={() => send({ type: "RESET" })}>
               Reset
             </Button>
           </div>
+        )}
+
+        {(state.phase === "resolved" || state.phase === "escalated") && recentActivity.length > 0 && (
+          <ol className="mt-3 space-y-1 border-t border-neutral-100 pt-3">
+            {recentActivity.map((a) => (
+              <li key={a.seq} className="flex gap-2 text-[10.5px] leading-snug text-neutral-500">
+                <span className="w-[92px] shrink-0 font-mono uppercase tracking-wide text-neutral-400">
+                  {a.kind.replace(/_/g, " ")}
+                </span>
+                <span className="line-clamp-2">{a.summary}</span>
+              </li>
+            ))}
+          </ol>
         )}
       </main>
 

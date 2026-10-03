@@ -1,9 +1,13 @@
-"""Wires SupportSession persistence to the state machine and to the
-existing diagnose()/evaluate() functions — reused exactly as they are,
-not reimplemented. Phase 1 walks the session through the legal states in
-one straight pass per AGENT_ARCHITECTURE.md's own scope note: this is
-"today's flow, now through named states," not the real bounded loop yet
-(that's Phase 3).
+"""SupportSession lifecycle outside the investigation cycle itself:
+creation (with the initial evidence request), then — once investigation.py
+has produced a remediation plan — policy, approval, execution, server-side
+verification, bounded retry and escalation.
+
+The backend is authoritative throughout: policy is evaluated on the
+session's own pending action against the provider capabilities recorded at
+creation, execution requires the policy decision (and approval where
+required) for that exact proposal, and verification is decided here from the
+evidence the plan cited — the provider only reports what it observed.
 """
 
 import logging
@@ -12,35 +16,48 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session as DBSession
 
+from operon_backend.activity import record_activity
 from operon_backend.db_models import SessionRecord
+from operon_backend.evidence import (
+    DEFAULT_COLLECTORS,
+    RECOLLECT_COLLECTORS,
+    build_request,
+    issue_request,
+)
+from operon_backend.investigation import next_cycle_blocked
 from operon_backend.knowledge import record_resolved_session_to_kb
 from operon_backend.loop_driver import (
-    CLOSED_HYPOTHESIS_STATUSES,
     MAX_ACTION_ATTEMPTS,
-    MAX_INVESTIGATION_STEPS,
-    MAX_LLM_CALLS,
-    MAX_TOOL_CALLS,
-    LimitExceeded,
-    check_limits,
+    escalate,
     escalate_for_limit,
-    log_diagnostic_step,
     update_or_create_hypothesis,
 )
-from operon_backend.retrieval import RetrievedChunk
+from operon_backend.policy import evaluate
 from operon_backend.schemas import (
-    Diagnosis,
-    EvidenceBundle,
-    HypothesisStatus,
+    COLLECTORS,
     PolicyDecision,
-    RemediationProposal,
+    SessionPolicyRequest,
+    VerificationObservation,
+    VerificationPlan,
 )
 from operon_backend.state_machine import IllegalTransition, SessionPhase, transition
 from operon_backend.tripwire import redact_credentials
+from operon_backend.verification import evaluate as evaluate_verification
 
 logger = logging.getLogger(__name__)
 
 
-def create_session(db: DBSession, user_issue: str, source: str = "github") -> SessionRecord:
+class RequestMismatch(Exception):
+    """The client referred to an action other than the session's pending one."""
+
+
+def create_session(
+    db: DBSession,
+    user_issue: str,
+    source: str = "github",
+    provider_capabilities: list[str] | None = None,
+    collectors: list[str] | None = None,
+) -> SessionRecord:
     # The user's own words are free text that reaches the database, the LLM,
     # retrieval and the knowledge base — redact anything credential-shaped
     # here, once, so no later step ever sees the raw value.
@@ -60,8 +77,33 @@ def create_session(db: DBSession, user_issue: str, source: str = "github") -> Se
                 "redaction_applied": redactions,
             }
         ],
+        environment_context={
+            "provider": "extension",
+            "source": source,
+            "provider_capabilities": list(provider_capabilities or []),
+            "collectors": [c for c in (collectors or COLLECTORS) if c in COLLECTORS],
+        },
+        activity=[],
+        diagnoses=[],
+        retrievals=[],
+        investigation_cycle=0,
+    )
+    record_activity(record, "session_created", "support session created", redaction_applied=redactions, source=source)
+    request, refused = build_request(
+        record,
+        purpose="initial",
+        collectors=DEFAULT_COLLECTORS,
+        params=None,
+        reason="Initial evidence: what the page is doing right now.",
+        requires_user_action=False,
     )
     db.add(record)
+    db.flush()  # apply column defaults (empty history lists, zero counters)
+    if request is None:
+        # Nothing this provider may collect: the investigation cannot start.
+        return escalate(db, record, "escalated_requested_evidence_unavailable",
+                        f"This provider can't collect any evidence ({'; '.join(refused)}).")
+    issue_request(record, request, refused)
     db.commit()
     db.refresh(record)
     return record
@@ -78,235 +120,75 @@ def require_phase(session: SessionRecord, expected: SessionPhase) -> None:
         )
 
 
-# Phases from which a new evidence bundle may be submitted for diagnosis.
-INVESTIGABLE_PHASES = (SessionPhase.UNDERSTANDING.value, SessionPhase.INVESTIGATING.value)
+def _pending(session: SessionRecord) -> dict:
+    if not session.pending_action:
+        raise IllegalTransition("The session has no pending remediation.")
+    return session.pending_action
 
 
-def begin_investigation_cycle(db: DBSession, session: SessionRecord) -> LimitExceeded | None:
-    """Gate that must pass before any retrieval or LLM work is spent on an
-    /investigate call. Raises IllegalTransition if the session can't accept
-    evidence in its current phase; if a hard limit is already reached,
-    escalates the session and returns the LimitExceeded."""
-    if session.phase not in INVESTIGABLE_PHASES:
-        raise IllegalTransition(
-            f"Investigation requires phase UNDERSTANDING or INVESTIGATING, session is in {session.phase}"
+def _require_pending_action(session: SessionRecord, action_id: str | None) -> dict:
+    pending = _pending(session)
+    if action_id is not None and action_id != pending.get("action_id"):
+        raise RequestMismatch(
+            f"Request refers to '{action_id}', but the session's pending action is '{pending.get('action_id')}'."
         )
-    limit_exc = check_limits(session)
-    if limit_exc:
-        escalate_for_limit(db, session, limit_exc)
-    return limit_exc
+    return pending
 
 
-def _remediation_previously_failed(session: SessionRecord, action_id: str, params: dict) -> bool:
-    """True if this exact action (same id and params) was already attempted
-    in this session and either failed to execute or failed verification."""
-    for attempt in session.attempted_actions or []:
-        if attempt.get("action_id") != action_id or (attempt.get("params") or {}) != (params or {}):
-            continue
-        if attempt.get("succeeded") is False or attempt.get("verified") is False:
-            return True
-    return False
+def _tenant(session: SessionRecord) -> str | None:
+    return (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
 
 
-def _log_step(session: SessionRecord, *, tool: str, reason: str, intent: str, expected_information: str) -> None:
-    log_diagnostic_step(
-        session,
-        tool=tool,
-        reason=reason,
-        intent=intent,
-        expected_information=expected_information,
-    )
+# ---- Policy -----------------------------------------------------------------------------
 
 
-def record_diagnosis(
-    db: DBSession,
-    session: SessionRecord,
-    bundle: EvidenceBundle,
-    diagnosis: Diagnosis,
-    retrieved: list[RetrievedChunk] | None = None,
-    retrieval_error: str | None = None,
-) -> SessionRecord:
-    if session.phase not in INVESTIGABLE_PHASES:
-        raise IllegalTransition(
-            f"record_diagnosis requires phase UNDERSTANDING or INVESTIGATING, session is in {session.phase}"
-        )
-
-    # Check hard limits first
-    limit_exc = check_limits(session)
-    if limit_exc:
-        return escalate_for_limit(db, session, limit_exc)
-
-    retrieved = retrieved or []
-    tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
-
-    if session.phase == SessionPhase.UNDERSTANDING.value:
-        if retrieval_error:
-            lookup_reason = f"knowledge search unavailable ({retrieval_error}); continuing without retrieved precedent"
-        elif retrieved:
-            summary = ", ".join(f"{r.chunk_id} ({r.score:.2f})" for r in retrieved)
-            lookup_reason = f"found {len(retrieved)} relevant knowledge chunk(s): {summary}"
-        else:
-            lookup_reason = "no knowledge chunk scored above the similarity floor"
-        transition(session, SessionPhase.KNOWLEDGE_LOOKUP, lookup_reason)
-        transition(session, SessionPhase.INVESTIGATING, "evidence already collected by the extension")
-        session.collected_evidence = [*session.collected_evidence, bundle.model_dump()]
-        _log_step(
-            session,
-            tool="collect_evidence",
-            reason="initial evidence collection from the active tab",
-            intent="investigate",
-            expected_information="console/network/storage/cookie signals",
-        )
-    else:
-        session.collected_evidence = [*session.collected_evidence, bundle.model_dump()]
-        _log_step(
-            session,
-            tool="collect_evidence",
-            reason="additional evidence collected for ongoing investigation",
-            intent="investigate",
-            expected_information="signals for hypothesis validation",
-        )
-
-    session.llm_call_count += 1
-    session.confidence = diagnosis.confidence
-    session.issue_category = diagnosis.category
-    session.knowledge_references = diagnosis.knowledge_refs
-
-    # Case 1: Insufficient evidence -> candidate hypothesis -> loop cycle
-    if diagnosis.category == "insufficient_evidence":
-        hyp = update_or_create_hypothesis(
-            session,
-            description=diagnosis.root_cause,
-            confidence=diagnosis.confidence,
-            status="candidate",
-            supporting_evidence_ids=diagnosis.evidence_ids,
-        )
-
-        limit_exc = check_limits(session)
-        if limit_exc:
-            return escalate_for_limit(db, session, limit_exc)
-
-        # Bounded loop: INVESTIGATING -> KNOWLEDGE_LOOKUP -> INVESTIGATING
-        transition(
-            session,
-            SessionPhase.KNOWLEDGE_LOOKUP,
-            f"insufficient initial evidence, refining knowledge lookup for candidate: {hyp.description}",
-        )
-        transition(
-            session,
-            SessionPhase.INVESTIGATING,
-            "evaluating refined knowledge and awaiting specific evidence checks",
-        )
-        _log_step(
-            session,
-            tool="search_knowledge",
-            intent="investigate",
-            reason=f"refined knowledge search for candidate {hyp.hypothesis_id}",
-            expected_information="diagnostic checks and failure signatures",
-        )
-
-    # Case 2: Sufficient evidence / confirmed / supported or known category
-    else:
-        if diagnosis.resolvable_automatically:
-            hyp_status: HypothesisStatus = "confirmed"
-        elif diagnosis.proposed_action is not None:
-            hyp_status = "supported"
-        else:
-            hyp_status = "supported" if diagnosis.category != "unknown" else "candidate"
-
-        if hyp_status == "candidate" and diagnosis.proposed_action is None:
-            hyp = update_or_create_hypothesis(
-                session,
-                description=diagnosis.root_cause,
-                confidence=diagnosis.confidence,
-                status="candidate",
-            )
-            transition(session, SessionPhase.HYPOTHESIS_FORMED, "formed candidate hypothesis from diagnosis call")
-            transition(session, SessionPhase.DIAGNOSING, "evaluating the hypothesis against the evidence")
-            session.resolution_state = "escalated_no_action_available"
-            transition(session, SessionPhase.ESCALATED, diagnosis.reasoning)
-            record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
-        else:
-            action_already_failed = diagnosis.proposed_action is not None and _remediation_previously_failed(
-                session, diagnosis.proposed_action.action_id, diagnosis.proposed_action.params
-            )
-            hyp = update_or_create_hypothesis(
-                session,
-                description=diagnosis.root_cause,
-                confidence=diagnosis.confidence,
-                status=hyp_status,
-                supporting_evidence_ids=diagnosis.evidence_ids,
-            )
-
-            # Never re-propose a remediation that already failed, and never
-            # advance a hypothesis that verification already refuted —
-            # AGENT_ARCHITECTURE.md: "never retry the same action unchanged".
-            if action_already_failed or hyp.status in CLOSED_HYPOTHESIS_STATUSES:
-                if action_already_failed:
-                    session.resolution_state = "escalated_remediation_already_failed"
-                    reason = (
-                        f"proposed remediation '{diagnosis.proposed_action.action_id}' with params "
-                        f"{diagnosis.proposed_action.params} already failed in this session; "
-                        f"not retrying it unchanged"
-                    )
-                else:
-                    session.resolution_state = "escalated_hypothesis_contradicted"
-                    reason = (
-                        f"evidence still points to {hyp.hypothesis_id}, which was already "
-                        f"{hyp.status}; no alternative explanation found"
-                    )
-                transition(session, SessionPhase.ESCALATED, reason)
-                record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
-                db.commit()
-                db.refresh(session)
-                return session
-
-            transition(session, SessionPhase.HYPOTHESIS_FORMED, f"formed {hyp.hypothesis_id} from the diagnosis call")
-            transition(session, SessionPhase.DIAGNOSING, "evaluating the hypothesis against the evidence")
-
-            if diagnosis.proposed_action is None:
-                session.resolution_state = "escalated_no_action_available"
-                transition(session, SessionPhase.ESCALATED, diagnosis.reasoning)
-                record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
-            else:
-                proposal = RemediationProposal(
-                    diagnosis=diagnosis.root_cause,
-                    evidence_ids=diagnosis.evidence_ids,
-                    action_id=diagnosis.proposed_action.action_id,
-                    parameters=diagnosis.proposed_action.params,
-                    expected_effect=diagnosis.reasoning,
-                    risk="unknown",
-                    verification_predicate=f"evidence supporting {hyp.hypothesis_id} no longer present after the action",
-                    requires_approval=True,
-                )
-                session.pending_action = proposal.model_dump()
-                transition(session, SessionPhase.ACTION_PROPOSED, "diagnosis produced a proposed action")
-
-    db.commit()
-    db.refresh(session)
-    return session
-
-
-def record_policy(db: DBSession, session: SessionRecord, decision: PolicyDecision) -> SessionRecord:
+def apply_policy(db: DBSession, session: SessionRecord, request: SessionPolicyRequest) -> PolicyDecision:
+    """Evaluates the session's own pending action — never an action named by
+    the client — against the capabilities recorded for this provider."""
     require_phase(session, SessionPhase.ACTION_PROPOSED)
+    pending = _require_pending_action(session, request.action_id)
+    if request.params is not None and request.params != (pending.get("parameters") or {}):
+        raise RequestMismatch("Request parameters differ from the pending action's parameters.")
+
+    recorded = (session.environment_context or {}).get("provider_capabilities") or []
+    capabilities = recorded or list(request.provider_capabilities or [])
+    decision = evaluate(pending["action_id"], pending.get("parameters") or {}, capabilities)
+
+    session.policy_decision = {
+        **decision.model_dump(),
+        "proposal_id": pending.get("proposal_id"),
+        "capabilities_source": "session" if recorded else "request",
+        "at": datetime.now(UTC).isoformat(),
+    }
+    record_activity(session, "policy_decided", f"{decision.decision}: {decision.reason}",
+                    proposal_id=pending.get("proposal_id"), action_id=decision.action_id, decision=decision.decision)
 
     if decision.decision == "DENY":
-        session.resolution_state = "escalated_policy_denied"
-        transition(session, SessionPhase.ESCALATED, decision.reason)
-        tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
-        record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
-    elif decision.decision == "REQUIRE_APPROVAL":
+        escalate(db, session, "escalated_policy_denied", decision.reason)
+        return decision
+    if decision.decision == "REQUIRE_APPROVAL":
         transition(session, SessionPhase.WAITING_FOR_APPROVAL, decision.reason)
     else:
         transition(session, SessionPhase.EXECUTING, decision.reason)
-
     db.commit()
     db.refresh(session)
-    return session
+    return decision
+
+
+# ---- Approval ---------------------------------------------------------------------------
 
 
 def record_approval(db: DBSession, session: SessionRecord, approved: bool) -> SessionRecord:
     require_phase(session, SessionPhase.WAITING_FOR_APPROVAL)
+    pending = _pending(session)
+    session.approval = {
+        "approved": approved,
+        "proposal_id": pending.get("proposal_id"),
+        "action_id": pending.get("action_id"),
+        "at": datetime.now(UTC).isoformat(),
+    }
+    record_activity(session, "approval", "approved by the user" if approved else "declined by the user",
+                    proposal_id=pending.get("proposal_id"), approved=approved)
 
     if approved:
         transition(session, SessionPhase.EXECUTING, "user approved the proposed action")
@@ -319,73 +201,151 @@ def record_approval(db: DBSession, session: SessionRecord, approved: bool) -> Se
     return session
 
 
-def record_action_result(db: DBSession, session: SessionRecord, succeeded: bool, detail: str) -> SessionRecord:
-    require_phase(session, SessionPhase.EXECUTING)
+# ---- Execution ----------------------------------------------------------------------------
 
-    session.action_attempt_count += 1
+
+def _execution_authorized(session: SessionRecord, pending: dict) -> None:
+    """Defense in depth on top of the state machine: the action that ran must
+    be the one policy evaluated and (where required) the user approved."""
+    decision = session.policy_decision or {}
+    if decision.get("proposal_id") != pending.get("proposal_id") or decision.get("decision") not in ("ALLOW", "REQUIRE_APPROVAL"):
+        raise IllegalTransition("No policy decision permits executing the pending action.")
+    if decision.get("decision") == "REQUIRE_APPROVAL":
+        approval = session.approval or {}
+        if not approval.get("approved") or approval.get("proposal_id") != pending.get("proposal_id"):
+            raise IllegalTransition("The pending action requires approval, and it has not been approved.")
+
+
+def record_action_result(db: DBSession, session: SessionRecord, action_id: str | None, succeeded: bool, detail: str) -> SessionRecord:
+    require_phase(session, SessionPhase.EXECUTING)
+    pending = _require_pending_action(session, action_id)
+    _execution_authorized(session, pending)
+    detail, _ = redact_credentials(detail or "")
+
+    session.action_attempt_count = (session.action_attempt_count or 0) + 1
     session.attempted_actions = [
-        *session.attempted_actions,
+        *(session.attempted_actions or []),
         {
-            "action_id": session.pending_action.get("action_id") if session.pending_action else None,
-            "params": session.pending_action.get("parameters", {}) if session.pending_action else {},
+            "proposal_id": pending.get("proposal_id"),
+            "action_id": pending.get("action_id"),
+            "params": pending.get("parameters", {}),
+            "attempt": session.action_attempt_count,
             "succeeded": succeeded,
             "verified": None,
             "detail": detail,
             "at": datetime.now(UTC).isoformat(),
         },
     ]
+    record_activity(session, "action_executed", f"{pending.get('action_id')}: {'succeeded' if succeeded else 'failed'} — {detail}",
+                    proposal_id=pending.get("proposal_id"), succeeded=succeeded)
 
-    if not succeeded and session.action_attempt_count >= MAX_ACTION_ATTEMPTS:
-        session.resolution_state = "escalated_action_failed"
-        transition(session, SessionPhase.ESCALATED, f"action execution failed, max attempts reached: {detail}")
-    else:
+    if succeeded:
         transition(session, SessionPhase.VERIFYING, "action executed, checking outcome")
+        db.commit()
+        db.refresh(session)
+        return session
 
-    db.commit()
-    db.refresh(session)
-    return session
-
-
-def record_verification(db: DBSession, session: SessionRecord, passed: bool, message: str) -> SessionRecord:
-    require_phase(session, SessionPhase.VERIFYING)
-
+    transition(session, SessionPhase.VERIFYING, f"action did not execute: {detail}")
+    _mark_last_attempt(session, verified=False)
     session.verification_state = {
-        "passed": passed,
-        "message": message,
+        "outcome": "not_run",
+        "passed": False,
+        "message": f"Nothing to verify — the action did not execute: {detail}",
+        "proposal_id": pending.get("proposal_id"),
         "at": datetime.now(UTC).isoformat(),
     }
+    return _after_failed_attempt(db, session, session.verification_state["message"], failure_kind="action_failed")
+
+
+# ---- Verification, retry -----------------------------------------------------------------
+
+
+def _mark_last_attempt(session: SessionRecord, *, verified: bool) -> None:
     if session.attempted_actions:
         attempts = [dict(a) for a in session.attempted_actions]
-        attempts[-1]["verified"] = passed
+        attempts[-1]["verified"] = verified
         session.attempted_actions = attempts
 
-    if passed:
-        session.resolution_state = "resolved"
-        transition(session, SessionPhase.RESOLVED, message)
-        tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
-        record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
-    elif session.action_attempt_count < MAX_ACTION_ATTEMPTS:
-        if session.hypotheses:
-            current_h = next(
-                (h for h in session.hypotheses if h.get("hypothesis_id") == session.current_hypothesis_id),
-                session.hypotheses[-1],
-            )
-            update_or_create_hypothesis(
-                session,
-                description=current_h.get("description", ""),
-                confidence=0.0,
-                status="contradicted",
-                contradicting_evidence_ids=current_h.get("supporting_evidence_ids", []),
-                hypothesis_id=current_h.get("hypothesis_id"),
-            )
-        transition(session, SessionPhase.INVESTIGATING, f"verification failed, retry budget remains: {message}")
-    else:
-        session.resolution_state = "escalated_verification_failed"
-        transition(session, SessionPhase.ESCALATED, f"verification failed, max attempts reached: {message}")
-        tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
-        record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
 
+def record_verification(db: DBSession, session: SessionRecord, action_id: str | None, observation: VerificationObservation) -> SessionRecord:
+    require_phase(session, SessionPhase.VERIFYING)
+    pending = _require_pending_action(session, action_id)
+    plan = VerificationPlan.model_validate(pending["verification"]) if pending.get("verification") else None
+    result = evaluate_verification(plan, observation)
+
+    session.verification_state = {
+        "outcome": result.outcome,
+        "passed": result.passed,
+        "message": result.message,
+        "proposal_id": pending.get("proposal_id"),
+        "strategy": plan.strategy if plan else None,
+        "observed": {
+            "console": len(observation.console),
+            "network": len(observation.network),
+            "storage_keys": [s.key for s in observation.storage] if observation.storage is not None else None,
+            "service_worker_scopes": observation.service_worker_scopes,
+            "error": observation.error,
+        },
+        "at": datetime.now(UTC).isoformat(),
+    }
+    _mark_last_attempt(session, verified=result.passed)
+    record_activity(session, "verification", result.message, outcome=result.outcome, proposal_id=pending.get("proposal_id"))
+
+    if result.passed:
+        session.resolution_state = "resolved"
+        transition(session, SessionPhase.RESOLVED, result.message)
+        record_activity(session, "resolved", result.message)
+        record_resolved_session_to_kb(db, session, tenant_id=_tenant(session))
+        db.commit()
+        db.refresh(session)
+        return session
+
+    return _after_failed_attempt(db, session, result.message, failure_kind="verification_failed")
+
+
+def _after_failed_attempt(db: DBSession, session: SessionRecord, message: str, *, failure_kind: str) -> SessionRecord:
+    """A remediation didn't work (didn't run, failed, or couldn't be verified).
+    Refute the hypothesis, then either re-collect evidence for a *different*
+    remediation (bounded) or escalate."""
+    if session.hypotheses:
+        current = next(
+            (h for h in session.hypotheses if h.get("hypothesis_id") == session.current_hypothesis_id),
+            session.hypotheses[-1],
+        )
+        update_or_create_hypothesis(
+            session,
+            description=current.get("description", ""),
+            confidence=0.0,
+            status="contradicted",
+            contradicting_evidence_ids=current.get("supporting_evidence_ids", []),
+            hypothesis_id=current.get("hypothesis_id"),
+        )
+
+    if (session.action_attempt_count or 0) >= MAX_ACTION_ATTEMPTS:
+        return escalate(db, session, f"escalated_{failure_kind}", f"{message} (max {MAX_ACTION_ATTEMPTS} remediation attempts reached)")
+
+    pending = session.pending_action or {}
+    plan = pending.get("verification") or {}
+    transition(session, SessionPhase.INVESTIGATING, f"{failure_kind.replace('_', ' ')}, retry budget remains: {message}")
+    request, refused = build_request(
+        session,
+        purpose="retry",
+        collectors=RECOLLECT_COLLECTORS,
+        params={"storage_keys": plan.get("storage_keys") or []},
+        reason=f"'{pending.get('action_id')}' did not fix the problem ({message}). Re-collecting the page's current "
+        f"state so a different remediation can be chosen.",
+        requires_user_action=False,
+    )
+    if request is None:
+        return escalate(db, session, "escalated_retry_evidence_unavailable",
+                        f"{message}; the evidence needed to retry can't be collected ({'; '.join(refused)})")
+    blocked = next_cycle_blocked(session, len(request.collectors))
+    if blocked:
+        return escalate_for_limit(db, session, blocked)
+    issue_request(session, request, refused)
+    record_activity(session, "retry", f"attempt {session.action_attempt_count} failed; re-collecting evidence for a different remediation",
+                    failed_proposal_id=pending.get("proposal_id"), reason=message)
+    transition(session, SessionPhase.NEED_INFORMATION, request.reason)
     db.commit()
     db.refresh(session)
     return session
-

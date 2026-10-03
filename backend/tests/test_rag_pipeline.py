@@ -24,20 +24,7 @@ from operon_backend.retrieval import (
     format_retrieved_context,
     search,
 )
-from operon_backend.session_service import (
-    create_session,
-    record_action_result,
-    record_approval,
-    record_diagnosis,
-    record_policy,
-    record_verification,
-)
-from operon_backend.schemas import (
-    Diagnosis,
-    EvidenceBundle,
-    PolicyDecision,
-    ProposedAction,
-)
+from operon_backend.session_service import create_session
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -221,43 +208,43 @@ def test_multi_tenant_isolation_red_team_r17():
 
 
 def test_session_lifecycle_wires_ingestion_hook():
-    """Verifies that verifying a session end-to-end creates a history chunk in the RAG store."""
+    """Resolving a session end-to-end creates a tenant-scoped history chunk in the RAG store."""
+    from flow_helpers import (
+        CAPABILITIES,
+        action_result,
+        approve,
+        corrupt_storage,
+        policy,
+        storage_state,
+        submit,
+        verify,
+    )
+    from starlette.testclient import TestClient
+
+    from operon_backend.main import app
+
+    client = TestClient(app)
     db = SessionLocal()
     try:
-        session = create_session(db, "Live session for RAG verification test")
+        session = create_session(db, "Live session for RAG verification test", provider_capabilities=CAPABILITIES)
         session.user_context = {"tenant_id": "tenant_test_live"}
         db.commit()
+        session_id, request = session.id, dict(session.evidence_request)
+    finally:
+        db.close()
 
-        # Walk through state machine
-        bundle = EvidenceBundle(
-            url="https://github.com/owner/repo",
-            timestamp=1727265600.0,
-            console=[],
-            network=[],
-            storage=[],
-            cookies=[],
-        )
+    body = submit(client, {"session_id": session_id, "evidence_request": request}, storage=[corrupt_storage("ev_001", "test_key")]).json()
+    assert body["session"]["phase"] == "ACTION_PROPOSED"
+    policy(client, session_id)
+    approve(client, session_id)
+    action_result(client, session_id, "clear_storage_key")
+    final = verify(client, session_id, "clear_storage_key", storage=[storage_state("test_key")]).json()
+    assert final["phase"] == "RESOLVED"
+    assert final["resolution_state"] == "resolved"
 
-        diag = Diagnosis(
-            category="storage_corruption",
-            root_cause="Bad localStorage key",
-            reasoning="Corrupted key",
-            evidence_ids=[],
-            confidence=0.9,
-            resolvable_automatically=True,
-            proposed_action=ProposedAction(action_id="clear_storage_key", params={"key": "test_key"}),
-        )
-        record_diagnosis(db, session, bundle, diag)
-        record_policy(db, session, PolicyDecision(action_id="clear_storage_key", decision="REQUIRE_APPROVAL", reason="Permitted action"))
-        record_approval(db, session, approved=True)
-        record_action_result(db, session, succeeded=True, detail="Key cleared")
-        record_verification(db, session, passed=True, message="Storage is now valid JSON")
-
-        assert session.phase == "RESOLVED"
-        assert session.resolution_state == "resolved"
-
-        # Check that history chunk was created
-        hist_chunk = db.get(KnowledgeChunk, f"hist_{session.id}")
+    db = SessionLocal()
+    try:
+        hist_chunk = db.get(KnowledgeChunk, f"hist_{session_id}")
         assert hist_chunk is not None
         assert hist_chunk.source_type == "history"
         assert hist_chunk.chunk_metadata.get("tenant_id") == "tenant_test_live"

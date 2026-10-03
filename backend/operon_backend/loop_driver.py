@@ -1,17 +1,16 @@
-"""The bounded investigation loop driver and hard limit enforcement.
+"""Hard limits, escalation, and the hypothesis model for the bounded
+investigation loop (the loop itself is driven by investigation.py).
 
-From AGENT_ARCHITECTURE.md Phase 3:
-- Replaces the linear walk with an iterative multi-cycle driver.
-- Enforces hard limits:
-    max_investigation_steps: 8
-    max_tool_calls: 6
-    max_llm_calls: 12
-    max_action_attempts: 2
-- Manages the Hypothesis model (candidate, supported, contradicted, confirmed, rejected).
-- Ensures that:
-    1. A session that starts with insufficient evidence can loop through
-       INVESTIGATING -> KNOWLEDGE_LOOKUP -> INVESTIGATING before reaching DIAGNOSING.
-    2. A limit-exceeded case correctly escalates instead of looping forever.
+Limits — every one of these ends the session in ESCALATED instead of
+letting it run on:
+    max_investigation_cycles  evidence submissions per session
+    max_tool_calls            evidence collector runs requested per session
+    max_llm_calls             model calls (including regenerations and failures)
+    max_evidence_items        evidence items stored per session
+    max_action_attempts       remediation attempts before escalating
+    max_identical_requests    times the same evidence request may be issued
+    max_retrievals            knowledge searches (retrieval is skipped, not
+                              escalated, past this — it is optional precedent)
 """
 
 import uuid
@@ -19,26 +18,25 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session as DBSession
 
+from operon_backend.activity import record_activity
 from operon_backend.db_models import SessionRecord
 from operon_backend.knowledge import record_resolved_session_to_kb
-from operon_backend.retrieval import build_query, search
-from operon_backend.schemas import (
-    Diagnosis,
-    EvidenceBundle,
-    Hypothesis,
-    HypothesisStatus,
-    RemediationProposal,
-)
+from operon_backend.schemas import Hypothesis, HypothesisStatus
 from operon_backend.state_machine import SessionPhase, transition
 
-MAX_INVESTIGATION_STEPS: int = 8
-MAX_TOOL_CALLS: int = 6
+MAX_INVESTIGATION_CYCLES: int = 5
+MAX_TOOL_CALLS: int = 24
 MAX_LLM_CALLS: int = 12
+MAX_EVIDENCE_ITEMS: int = 300
 MAX_ACTION_ATTEMPTS: int = 2
+MAX_IDENTICAL_REQUESTS: int = 2
+MAX_RETRIEVALS: int = 6
 
 # A hypothesis in one of these states has been refuted — e.g. its remediation
 # failed verification — and must never be silently re-confirmed.
 CLOSED_HYPOTHESIS_STATUSES = frozenset({"contradicted", "rejected"})
+
+TERMINAL_PHASES = (SessionPhase.RESOLVED.value, SessionPhase.ESCALATED.value)
 
 
 class LimitExceeded(Exception):
@@ -49,41 +47,65 @@ class LimitExceeded(Exception):
         super().__init__(f"Limit exceeded: {limit_name} ({current_value} >= {max_value})")
 
 
+def evidence_item_count(session: SessionRecord) -> int:
+    return sum(int(b.get("item_count", 0)) for b in (session.collected_evidence or []))
+
+
 def check_limits(session: SessionRecord) -> LimitExceeded | None:
-    """Verifies that the session has not exceeded any hard limits."""
-    inv_steps = sum(
-        1
-        for p in session.phase_history
-        if p.get("to")
-        in (
-            SessionPhase.INVESTIGATING.value,
-            SessionPhase.KNOWLEDGE_LOOKUP.value,
-            SessionPhase.NEED_INFORMATION.value,
-        )
-    )
-    if inv_steps >= MAX_INVESTIGATION_STEPS:
-        return LimitExceeded("max_investigation_steps", inv_steps, MAX_INVESTIGATION_STEPS)
-    if session.tool_call_count >= MAX_TOOL_CALLS:
-        return LimitExceeded("max_tool_calls", session.tool_call_count, MAX_TOOL_CALLS)
-    if session.llm_call_count >= MAX_LLM_CALLS:
-        return LimitExceeded("max_llm_calls", session.llm_call_count, MAX_LLM_CALLS)
+    """Whether the session may start another investigation cycle."""
+    checks = [
+        ("max_investigation_cycles", session.investigation_cycle or 0, MAX_INVESTIGATION_CYCLES),
+        ("max_tool_calls", session.tool_call_count or 0, MAX_TOOL_CALLS),
+        ("max_llm_calls", session.llm_call_count or 0, MAX_LLM_CALLS),
+        ("max_evidence_items", evidence_item_count(session), MAX_EVIDENCE_ITEMS),
+    ]
+    for name, current, maximum in checks:
+        if current >= maximum:
+            return LimitExceeded(name, current, maximum)
     return None
+
+
+def escalate(db: DBSession, session: SessionRecord, resolution_state: str, reason: str, guidance: str | None = None) -> SessionRecord:
+    """The one way a session reaches ESCALATED: records why, preserves a
+    summary of everything that happened, and saves it as history. Never
+    claims resolution. Commits."""
+    if session.phase in TERMINAL_PHASES:
+        return session
+    last_verification = session.verification_state or None
+    session.resolution_state = resolution_state
+    session.escalation_state = {
+        "reason": reason,
+        "resolution_state": resolution_state,
+        "from_phase": session.phase,
+        "at": datetime.now(UTC).isoformat(),
+        "guidance": guidance,
+        "investigation_cycles": session.investigation_cycle or 0,
+        "evidence_bundles": len(session.collected_evidence or []),
+        "evidence_items": evidence_item_count(session),
+        "diagnoses": len(session.diagnoses or []),
+        "attempted_actions": [
+            {k: a.get(k) for k in ("action_id", "params", "succeeded", "verified", "detail")}
+            for a in (session.attempted_actions or [])
+        ],
+        "last_verification": last_verification,
+    }
+    transition(session, SessionPhase.ESCALATED, reason)
+    record_activity(session, "escalated", reason, resolution_state=resolution_state)
+    tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
+    record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
+    db.commit()
+    db.refresh(session)
+    return session
 
 
 def escalate_for_limit(db: DBSession, session: SessionRecord, exc: LimitExceeded) -> SessionRecord:
     """Escalates a session cleanly when a hard limit is reached."""
-    if session.phase not in (SessionPhase.RESOLVED.value, SessionPhase.ESCALATED.value):
-        session.resolution_state = f"escalated_{exc.limit_name}_exceeded"
-        transition(
-            session,
-            SessionPhase.ESCALATED,
-            f"Investigation halted: hard limit '{exc.limit_name}' reached ({exc.current_value} >= {exc.max_value})",
-        )
-        tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
-        record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
-        db.commit()
-        db.refresh(session)
-    return session
+    return escalate(
+        db,
+        session,
+        f"escalated_{exc.limit_name}_exceeded",
+        f"Investigation halted: hard limit '{exc.limit_name}' reached ({exc.current_value} >= {exc.max_value})",
+    )
 
 
 def update_or_create_hypothesis(
@@ -177,24 +199,3 @@ def update_or_create_hypothesis(
     session.hypotheses = [*session.hypotheses, new_h.model_dump()]
     session.current_hypothesis_id = new_h.hypothesis_id
     return new_h
-
-
-def log_diagnostic_step(
-    session: SessionRecord,
-    *,
-    tool: str,
-    intent: str,
-    reason: str,
-    expected_information: str,
-) -> None:
-    session.diagnostic_steps = [
-        *session.diagnostic_steps,
-        {
-            "intent": intent,
-            "reason": reason,
-            "tool": tool,
-            "expected_information": expected_information,
-            "at": datetime.now(UTC).isoformat(),
-        },
-    ]
-    session.tool_call_count += 1

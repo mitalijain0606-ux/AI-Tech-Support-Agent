@@ -1,10 +1,10 @@
 # Operon Agent Architecture — from diagnostic chatbot to L2/L3 technician
 
-**Status: design document, not yet implemented.** This is Phase 0 (audit)
-and the redesign it justifies. No code changes were made writing this —
-per the brief, the architecture map comes before modifying files. See
-[Phased implementation plan](#phased-implementation-plan) at the end for
-what actually gets built, in what order.
+**Status: core functionality implemented.** This document started as the
+Phase 0 audit and the redesign it justified; the sections below that
+describe the *design* are kept as written. What is actually built — and
+what is not — is in [As implemented](#as-implemented-core-functionality)
+and the [Phased implementation plan](#phased-implementation-plan) at the end.
 
 This refines and extends
 [`docs/plan/production-architecture.md`](docs/plan/production-architecture.md),
@@ -468,25 +468,76 @@ Large enough to need sequencing, same reasoning as the phase docs in
   corrupted-cache and ad-blocker scenarios both retrieve their own KB
   entry correctly, and the model correctly cited the retrieved chunk in
   `knowledge_refs`. 32 backend tests pass.
-- [x] **Phase 3 — The bounded loop + hypothesis model.** Done.
-  `loop_driver.py` (`MAX_INVESTIGATION_STEPS=8`, `MAX_TOOL_CALLS=6`,
-  `MAX_LLM_CALLS=12`, `MAX_ACTION_ATTEMPTS=2`), `Hypothesis` and
-  `RemediationProposal` schemas, bounded loop transitions in
-  `session_service.py`, and endpoint `/api/sessions/{id}/investigate`.
-  Gate met: a session starting with insufficient evidence loops
-  `INVESTIGATING` → `KNOWLEDGE_LOOKUP` → `INVESTIGATING` before reaching
-  `DIAGNOSING`, and limit-exceeded cases reliably escalate. 58 backend tests pass.
-- **Phase 4 — Questioning + progressive evidence collection.** Split
-  `collectEvidence()` into the independently callable tools in the table
-  above, add `NEED_INFORMATION` as a real reachable state with a popup
-  UI for it (the popup currently has no way to show a mid-investigation
-  question — this is new UI, not a restyle). Gate: a case genuinely
-  missing information (not derivable from evidence) produces one specific
-  question, not a generic one.
-- **Phase 5 — Structured activity events end to end.** Replace whole-state
-  broadcasts with the granular event stream, update the popup to render
-  it. Gate: every event shown in the popup traces to one real backend
-  operation in `diagnostic_steps`.
+- [x] **Phase 3 — The bounded loop + hypothesis model.** Done, then
+  reworked in the core-functionality milestone: the loop is now driven by
+  real investigation cycles (see below), and the limits count cycles,
+  collector runs, LLM calls and evidence items instead of phase transitions.
+- [x] **Phase 4 — Progressive evidence collection + NEED_INFORMATION.**
+  Done for *evidence*: the backend issues explicit, bounded evidence
+  requests (collectors `console`, `network`, `storage`, `cookies`, `page`,
+  `reload_observe`), the model can answer "insufficient evidence" with a
+  structured `information_request`, `NEED_INFORMATION` is a real phase
+  with popup UI, and a request may ask the user to reproduce the problem.
+  **Not built:** free-text questions the user answers in words (e.g. "did
+  you just install an extension?") — the loop asks for *evidence*, not
+  for typed answers.
+- [~] **Phase 5 — Activity history.** Partly: every stage appends a
+  secret-free entry to `SupportSession.activity`, and the popup shows the
+  latest entries on the outcome screen. **Not built:** a live event
+  *stream* — the popup still receives state snapshots.
 
 Phases 1–3 are the core of "not a chatbot anymore." Phases 4–5 are what
 make that visible and interactive rather than just true internally.
+
+---
+
+## As implemented (core functionality)
+
+```text
+POST /api/sessions                      session + initial EvidenceRequest (UNDERSTANDING)
+  provider collects exactly what was requested
+POST /api/sessions/{id}/investigate     one bounded cycle — investigation.py:
+    1 evidence       validated against the outstanding request; ids unique per
+                     session; provenance (bundle_id, request_id, cycle); budget
+    2 understanding  deterministic anomaly summary (evidence.understand)
+    3 retrieval      real search each time the evidence changes; recorded as
+                     ok / no_match / error / skipped_unchanged / skipped_budget
+    4 diagnosis      LLM (Groq) or the labelled offline "rule_based" engine;
+                     grounding-validated, one regeneration, else ESCALATED
+    5 decision       NEED_INFORMATION (new EvidenceRequest)
+                     | ACTION_PROPOSED (planning.build_proposal)
+                     | ESCALATED (no safe action, limits, repeats)
+POST /api/sessions/{id}/policy          evaluates the *pending* proposal against the
+                                        capabilities recorded at session creation
+POST /api/sessions/{id}/approve         required for REQUIRE_APPROVAL actions
+POST /api/sessions/{id}/action-result   must name the pending action; needs policy
+                                        (and approval) for that exact proposal
+POST /api/sessions/{id}/verify          provider reports an observation; the backend
+                                        decides (verification.py) → RESOLVED, or a
+                                        retry EvidenceRequest, or ESCALATED
+```
+
+- **Grounding.** Citations must name evidence shown to the model (the
+  evidence window since the last remediation attempt) and retrieved
+  knowledge chunks; a proposed action must cite evidence and stay in the
+  closed action set; `clear_storage_key`/`unregister_service_worker`
+  targets must appear in the evidence. Evidence, retrieved knowledge and
+  the user's text are presented to the model as untrusted data.
+- **Verification** is decided server-side from the evidence the plan
+  cited (embedded in the plan): cited console/network signals must not
+  reappear, cited storage keys must be gone or valid, a service-worker
+  scope must be unregistered; anything that can't be re-checked is
+  `inconclusive`, which never resolves a session.
+- **Retry.** A failed or inconclusive attempt contradicts the hypothesis
+  and issues a `retry` evidence request; the same action with the same
+  parameters is never proposed again. `MAX_ACTION_ATTEMPTS` escalates.
+- **Escalation** records `escalation_state` (reason, attempts, last
+  verification, evidence counts, guidance) and never claims resolution.
+- **Limits** (`loop_driver.py`): 5 investigation cycles, 24 collector
+  runs, 12 LLM calls, 300 evidence items, 2 remediation attempts, the same
+  evidence request at most twice, 6 retrievals (retrieval is skipped, not
+  escalated, past that).
+- **Extension.** Request-driven collectors, the four action executors
+  (`unregister_service_worker` verified against a real service worker in
+  Chromium), observation-only verification, resync from the backend after
+  a service-worker restart, and validation of every backend response.

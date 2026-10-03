@@ -17,3 +17,31 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_TEST_DB_PATH}"
 from operon_backend.db import init_db
 
 init_db()
+
+import pytest
+
+from operon_backend.config import settings
+
+
+@pytest.fixture(autouse=True)
+def _offline_engine_by_default(monkeypatch):
+    """Every test runs against the labelled offline engine unless it installs
+    FakeGroq (tests/flow_helpers.py). No test can reach a real model."""
+    monkeypatch.setattr(settings, "groq_api_key", "")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_session_history():
+    """Resolved/escalated sessions are saved as `history` knowledge chunks.
+    Remove them after each test so one test's sessions never become another
+    test's retrieval results."""
+    yield
+    from operon_backend.db import SessionLocal
+    from operon_backend.db_models import KnowledgeChunk
+
+    db = SessionLocal()
+    try:
+        db.query(KnowledgeChunk).filter(KnowledgeChunk.source_type == "history").delete()
+        db.commit()
+    finally:
+        db.close()
