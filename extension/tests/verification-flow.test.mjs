@@ -147,3 +147,16 @@ test("clear_storage_key on an unreachable tab is a failed action, not a stuck se
   assert.equal(world.calls("/action-result")[0].body.succeeded, false);
   assert.equal(world.popup.last().phase, "needs_more_evidence");
 });
+
+test("the verification observation is credential-redacted before it is reported", async () => {
+  const token = ["gs", "k_", "A1b2C3d4E5f6G7h8J9k0", "A1b2C3d4E5f6G7h8J9k0"].join("");
+  const world = await approveAndRun(plan("reload", { cited: CITED_CONSOLE }), {
+    onReload: (w) => {
+      w.emit("Runtime.executionContextsCleared");
+      w.consoleError(`request failed with key ${token}`);
+    },
+  });
+  const obs = observationOf(world);
+  assert.ok(!JSON.stringify(obs).includes(token.slice(4)));
+  assert.deepEqual(obs.console.map((c) => c.text), ["request failed with key [REDACTED:api_key]"]);
+});

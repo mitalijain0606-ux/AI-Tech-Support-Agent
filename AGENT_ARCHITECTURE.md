@@ -408,7 +408,7 @@ operational record plus whatever evidence IDs it produced.
 | LLM never executes arbitrary browser code | Model only ever emits an `action_id` string (`llm.py`); `background.ts` has a fixed `switch` over known IDs | **Unchanged.** New stages still only emit structured JSON, never code. |
 | Browser capabilities allowlisted | `PROVIDER_CAPABILITIES` in `background.ts` | **Unchanged**, extended with new tool names as they're actually implemented (never speculatively). |
 | Actions pass through the Policy Engine | `policy.py` `evaluate()`, called from `ASK_OPERON` | **Unchanged call site behavior** — now called from `ACTION_PROPOSED`'s transition instead, same function. |
-| Credentials never sent to backend/LLM | `CookieSignal`/`StorageSignal` schemas, `tripwire.py` | **Unchanged.** `collected_evidence` in `SupportSession` stores the same value-free bundles. |
+| Credentials never sent to backend/LLM | `CookieSignal`/`StorageSignal` schemas, `extension/src/lib/sanitize.ts`, `tripwire.py` | **Strengthened.** Collectors stay value-free. The extension now redacts credential-shaped strings before upload. The tripwire detects API keys, GitHub tokens, JWTs, bearer/basic auth, private keys, connection strings, URL userinfo/query/fragment credentials, cookie headers and secret assignments (escaped JSON included). It rejects evidence that still carries one and redacts free text, action details, activity and KB history. The red-team matrix is `backend/tests/test_safety_matrix.py`. |
 | Page content is untrusted data | Stated in `llm.py`'s prompt today (implicitly via evidence framing) | **Made explicit** as technician principle #16/#17, applied to KB/history retrieval too (see RAG guardrails in `production-architecture.md`). |
 | Destructive actions require approval | `policy.py`'s `REQUIRE_APPROVAL` class | **Unchanged.** |
 | Every automatic action has a verification predicate | `executeAndVerify()`'s deterministic re-check | **Unchanged pattern**, generalized to `RemediationProposal.verification_predicate` per-action instead of one hardcoded check. |
@@ -537,6 +537,14 @@ POST /api/sessions/{id}/verify          provider reports an observation; the bac
   runs, 12 LLM calls, 300 evidence items, 2 remediation attempts, the same
   evidence request at most twice, 6 retrievals (retrieval is skipped, not
   escalated, past that).
+- **Contract hardening.** Provider-supplied strings and lists are
+  size-bounded (over-long → 422, nothing stored). `/verify` rejects unknown
+  fields, so a client can't send `passed` or `outcome`.
+- **Validation.** What has been verified against real services (and what
+  is blocked or stubbed) is in [`docs/TESTING.md`](docs/TESTING.md). The
+  "verified live against a real Groq call" notes in the phase list above
+  are historical. They were not re-run in the validation milestone, which
+  had no Groq key.
 - **Extension.** Request-driven collectors, the four action executors
   (`unregister_service_worker` verified against a real service worker in
   Chromium), observation-only verification, resync from the backend after

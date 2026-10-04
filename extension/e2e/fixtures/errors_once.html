@@ -1,0 +1,7 @@
+<!doctype html><title>errors once</title><script>
+// Fails only on the first load in this tab — a reload genuinely fixes it.
+if (!sessionStorage.getItem("loaded_once")) {
+  sessionStorage.setItem("loaded_once", "1");
+  setInterval(() => console.error("TypeError: transient init failure"), 700);
+}
+</script><p>errors until reloaded</p>

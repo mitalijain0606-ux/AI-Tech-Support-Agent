@@ -10,7 +10,14 @@ class TripwireHit(Exception):
         self.detail = detail
 
 
-# Regex rules for scanning credential patterns
+# Regex rules for scanning credential patterns. Each name is also what
+# appears in a redaction placeholder: [REDACTED:<name>].
+#
+# Precision matters as much as recall: on the evidence endpoint ANY hit
+# rejects the whole submission, so a rule that matches ordinary prose would
+# break real investigations. The assignment/field rules therefore need a
+# value that looks like a secret (a digit, or enough length), not just a
+# keyword ("password: required" is a form message, not a leak).
 TRIPWIRE_RULES: list[tuple[str, re.Pattern[str]]] = [
     (
         "jwt_token",
@@ -30,7 +37,57 @@ TRIPWIRE_RULES: list[tuple[str, re.Pattern[str]]] = [
     ),
     (
         "sensitive_json_field",
-        re.compile(r'(?i)"(?:password|secret|access_token|private_key)":\s*"[^"]{6,}"'),
+        # Also matches the escaped form (\"password\": \"...\") — that is how a
+        # JSON object logged to the console arrives inside the evidence payload.
+        re.compile(
+            r'(?i)\\?"(?:password|passwd|secret|client_secret|access_token|refresh_token|id_token|token|api_?key'
+            r'|authorization|private_key|session_?id|cookie)\\?"\s*:\s*\\?"[^"\\]{6,}'
+        ),
+    ),
+    (
+        # ghp_/gho_/ghu_/ghs_/ghr_ tokens and fine-grained github_pat_ tokens.
+        "github_token",
+        re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b|\bgithub_pat_[A-Za-z0-9_]{30,}\b"),
+    ),
+    (
+        # Vendor-prefixed API keys: Groq, OpenAI-style, Slack, AWS, Google.
+        "api_key",
+        re.compile(
+            r"\b(?:gsk_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|xox[abprs]-[A-Za-z0-9-]{10,}"
+            r"|(?:AKIA|ASIA)[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,})"
+        ),
+    ),
+    (
+        # A PEM header, or the base64 of a DER structure (what the body of a key starts with).
+        "private_key",
+        re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----|\bMII[A-Za-z0-9+/]{50,}={0,2}"),
+    ),
+    (
+        # scheme://user:password@host — connection strings, URL userinfo.
+        "url_credentials",
+        re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/@:?#]+:[^\s/@?#]+@"),
+    ),
+    (
+        # Credentials carried in a URL query string or fragment.
+        "url_query_credential",
+        re.compile(
+            r"(?i)[?&;#](?:access_token|id_token|refresh_token|token|api[_-]?key|apikey|client_secret|secret"
+            r"|password|passwd|auth|authorization|sig|signature|session[_-]?id|sessionid|sid|jwt)=[^&#\s\"'<>]{6,}"
+        ),
+    ),
+    (
+        # password=hunter2 / api_key: 8f3k2... in plain text. The lookahead
+        # demands a digit so form messages like "password: required" pass.
+        "credential_assignment",
+        re.compile(
+            r"(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret"
+            r"|private[_-]?key)\b\s*[:=]\s*[\"']?(?=[^\s\"'&;,<>]*\d)[^\s\"'&;,<>]{6,}"
+        ),
+    ),
+    (
+        # A Cookie / Set-Cookie header with at least one name=value pair; redacts the rest of the line.
+        "cookie_header",
+        re.compile(r"(?i)\b(?:set-)?cookie\s*:[^\r\n]*=[^\r\n]{6,}"),
     ),
 ]
 

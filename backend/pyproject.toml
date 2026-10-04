@@ -31,3 +31,7 @@ ignore = ["B008"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "live_embeddings: needs the real embedding model (first use downloads ~90 MB from huggingface.co)",
+    "live_groq: needs GROQ_API_KEY and network access to api.groq.com",
+]

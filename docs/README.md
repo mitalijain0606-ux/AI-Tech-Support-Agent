@@ -18,9 +18,8 @@ Two folders, two different jobs — don't mix content between them.
 
 1. [`plan/00-overview.md`](plan/00-overview.md) — current architecture,
    in one page.
-2. [`plan/01-phase-1-github.md`](plan/01-phase-1-github.md) — the stateless
-   MVP that proved the loop works. Done; superseded in scope (not
-   invalidated) by the next doc.
+2. [`plan/01-phase-1-github.md`](plan/01-phase-1-github.md) — the GitHub
+   target: what's done, what's validated live, what's still manual.
 3. [`plan/production-architecture.md`](plan/production-architecture.md) —
    active: persistence, RAG, and the real five-stage pipeline, built on
    top of Phase 1's working loop.
@@ -35,6 +34,12 @@ Two folders, two different jobs — don't mix content between them.
 7. [`plan/03-roadmap.md`](plan/03-roadmap.md) — real future work, not active.
 8. `archive/` — only when you want the original reasoning behind something
    in the roadmap.
+
+## Testing and validation status
+
+[`TESTING.md`](TESTING.md) — every test suite, what's stubbed vs real, the
+real-service validation results (Groq, embeddings, github.com), and known
+limitations.
 
 ## Status tracking
 

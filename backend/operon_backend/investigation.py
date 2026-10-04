@@ -58,6 +58,7 @@ from operon_backend.planning import build_proposal
 from operon_backend.retrieval import RetrievedChunk, build_query, search
 from operon_backend.schemas import COLLECTORS, Diagnosis, EvidenceBundle
 from operon_backend.state_machine import IllegalTransition, SessionPhase, transition
+from operon_backend.tripwire import redact_credentials
 
 # Phases in which the session is waiting for evidence.
 INVESTIGABLE_PHASES = (SessionPhase.UNDERSTANDING.value, SessionPhase.NEED_INFORMATION.value)
@@ -141,7 +142,7 @@ async def retrieve(db: DBSession, session: SessionRecord, query: str) -> tuple[l
         try:
             chunks = await run_in_threadpool(search, db, query, tenant_id=_tenant(session))
         except Exception as exc:  # noqa: BLE001 — any embedder/store failure (network, ONNX, OS, DB)
-            record.update(status="error", error=type(exc).__name__)
+            record.update(status="error", error=type(exc).__name__, error_detail=redact_credentials(str(exc))[0][:200])
             reason = f"knowledge search unavailable ({type(exc).__name__}); continuing without retrieved precedent"
         else:
             if chunks:

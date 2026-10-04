@@ -23,6 +23,7 @@ import {
   type VerificationPlan,
   type ViewPhase,
 } from "./lib/types";
+import { redactDeep } from "./lib/sanitize";
 
 // Injected at build time by scripts/build.mjs: OPERON_BACKEND_URL, else the
 // target's "backend_url", else http://localhost:8000 for local development.
@@ -44,6 +45,12 @@ const COLLECTORS: Collector[] = ["console", "network", "storage", "cookies", "pa
 // Per-bundle caps, matching the backend's (evidence.KIND_CAPS).
 const CAPS = { console: 40, network: 40, cookies: 40, storage: 25, page: 3 };
 const MAX_TEXT = 500;
+// The backend rejects longer values (schemas.py: 2000-char text, 200-char
+// short fields). Context strings are truncated to fit; identifiers an action
+// or a verification re-check depends on are dropped instead, because a
+// truncated storage key or scope would name something else.
+const MAX_URL = 1000;
+const MAX_KEY = 200;
 // Local guard on evidence requests continued without a user click per
 // command; the backend's own limits are the real bound.
 const MAX_AUTO_CYCLES = 6;
@@ -284,7 +291,9 @@ async function collectForRequest(tab: chrome.tabs.Tab, request: EvidenceRequest)
       try {
         const res = await sendToContent(tab.id!, { type: "CHECK_STORAGE", keys: request.params.storage_keys });
         // Absent keys are only evidence when they were explicitly asked about.
-        storage = withIds((res.storage ?? []).filter((s) => s.present || request.params.storage_keys.includes(s.key)));
+        storage = withIds(
+          (res.storage ?? []).filter((s) => s.key.length <= MAX_KEY && (s.present || request.params.storage_keys.includes(s.key))),
+        );
       } catch {
         errors.push("storage_unreachable");
       }
@@ -329,7 +338,7 @@ async function collectForRequest(tab: chrome.tabs.Tab, request: EvidenceRequest)
     }));
   }
 
-  return {
+  const bundle: EvidenceBundle = {
     url: tab.url!,
     timestamp: Date.now() / 1000,
     bundle_id: `bun_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`,
@@ -342,6 +351,20 @@ async function collectForRequest(tab: chrome.tabs.Tab, request: EvidenceRequest)
     storage: storage.slice(0, CAPS.storage),
     page: page.slice(0, CAPS.page),
     redaction_applied: [],
+  };
+  // Pages log tokens and signed URLs; redact them here rather than have the
+  // backend's tripwire reject the whole submission.
+  const { value, rules } = redactDeep(bundle);
+  // Truncate only after redaction, so a secret is never cut short of being recognised.
+  return {
+    ...value,
+    url: value.url.slice(0, MAX_URL),
+    page: value.page.map((p) => ({
+      ...p,
+      url_path: p.url_path.slice(0, MAX_URL),
+      service_worker_scopes: p.service_worker_scopes.filter((scope) => scope.length <= MAX_URL),
+    })),
+    redaction_applied: rules,
   };
 }
 
@@ -432,7 +455,12 @@ async function recordActionResult(sessionId: string, actionId: string, succeeded
 
 async function recordVerification(sessionId: string, actionId: string, observation: VerificationObservation): Promise<SupportSession> {
   return asSession(
-    await request("POST", `/api/sessions/${sessionId}/verify`, { action_id: actionId, observation }, "Recording verification"),
+    await request(
+      "POST",
+      `/api/sessions/${sessionId}/verify`,
+      { action_id: actionId, observation: redactDeep(observation).value },
+      "Recording verification",
+    ),
   );
 }
 

@@ -1,6 +1,6 @@
-from typing import Any, Literal, get_args
+from typing import Annotated, Any, Literal, get_args
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 HypothesisStatus = Literal["candidate", "supported", "contradicted", "confirmed", "rejected"]
 
@@ -31,76 +31,83 @@ class ToolCallLog(BaseModel):
 
 # ---- Evidence -----------------------------------------------------------------
 
+# Bounds on every provider-supplied string. The extension already truncates
+# far below these (500 chars); the backend enforces them anyway so no client
+# can push megabytes into storage or the model prompt. Over-long → 422.
+Id = Annotated[str, StringConstraints(max_length=64)]
+Short = Annotated[str, StringConstraints(max_length=200)]
+Text = Annotated[str, StringConstraints(max_length=2000)]
+
 
 class ConsoleEvidence(BaseModel):
-    id: str
-    level: str = "error"  # "error", "warn", "info"
-    text: str
-    url: str | None = None
+    id: Id
+    level: Short = "error"  # "error", "warn", "info"
+    text: Text
+    url: Text | None = None
     line: int | None = None
     column: int | None = None
     count: int = 1
 
 
 class NetworkEvidence(BaseModel):
-    id: str
-    method: str
-    url: str
+    id: Id
+    method: Short
+    url: Text
     status: int
-    status_text: str | None = None
+    status_text: Short | None = None
     duration_ms: float | None = None
-    failure_reason: str | None = None
+    failure_reason: Text | None = None
 
 
 class CookieSignal(BaseModel):
     """Metadata only — cookie values MUST NEVER be included."""
-    id: str
-    name: str
-    domain: str
-    path: str = "/"
+    id: Id
+    name: Short
+    domain: Short
+    path: Text = "/"
     secure: bool = False
     http_only: bool = False
-    same_site: str | None = None
+    same_site: Short | None = None
     expires_at: float | None = None
 
 
 class StorageSignal(BaseModel):
     """Storage shape and parse status only — raw values MUST NEVER be included."""
-    id: str
-    storage_type: str = "localStorage"  # "localStorage" | "sessionStorage"
-    key: str
+    id: Id
+    storage_type: Short = "localStorage"  # "localStorage" | "sessionStorage"
+    key: Short
     present: bool = True
-    parse_status: str = "valid_json"  # "valid_json" | "syntax_error" | "not_json" | "empty"
-    error_message: str | None = None
+    parse_status: Short = "valid_json"  # "valid_json" | "syntax_error" | "not_json" | "empty"
+    error_message: Text | None = None
 
 
 class PageSignal(BaseModel):
     """Derived page state only — never page text beyond a truncated title."""
-    id: str
-    url_path: str
-    title: str | None = None
-    ready_state: str | None = None
+    id: Id
+    url_path: Text
+    title: Short | None = None
+    ready_state: Short | None = None
     service_worker_controlled: bool = False
-    service_worker_scopes: list[str] = Field(default_factory=list)  # scope paths only
-    selector: str | None = None
+    service_worker_scopes: list[Text] = Field(default_factory=list, max_length=20)  # scope paths only
+    selector: Short | None = None
     selector_matches: int | None = None
 
 
 class EvidenceBundle(BaseModel):
-    url: str
+    url: Text
     timestamp: float
     # Provenance: which collection produced this bundle and in answer to
     # which backend evidence request. Filled in by the backend if absent.
-    bundle_id: str | None = None
-    request_id: str | None = None
-    collectors: list[str] = Field(default_factory=list)
-    collection_errors: list[str] = Field(default_factory=list)  # e.g. "debugger_unavailable"
+    bundle_id: Id | None = None
+    request_id: Id | None = None
+    collectors: list[Short] = Field(default_factory=list, max_length=20)
+    collection_errors: list[Short] = Field(default_factory=list, max_length=20)  # e.g. "debugger_unavailable"
     console: list[ConsoleEvidence] = Field(default_factory=list)
     network: list[NetworkEvidence] = Field(default_factory=list)
     cookies: list[CookieSignal] = Field(default_factory=list)
     storage: list[StorageSignal] = Field(default_factory=list)
     page: list[PageSignal] = Field(default_factory=list)
-    redaction_applied: list[str] = Field(default_factory=list)
+    redaction_applied: list[Short] = Field(default_factory=list, max_length=50)
 
     def items(self) -> list[tuple[str, BaseModel]]:
         """Every evidence item with its kind."""
@@ -215,21 +222,24 @@ class RemediationProposal(BaseModel):
 
 
 class StorageState(BaseModel):
-    key: str
+    key: Short
     present: bool
-    parse_status: str
-    error_message: str | None = None
+    parse_status: Short
+    error_message: Text | None = None
 
 
 class VerificationObservation(BaseModel):
     """What the provider observed after an action. The backend — not the
-    provider — decides whether this means the cited problem is gone."""
+    provider — decides whether this means the cited problem is gone.
+    Unknown fields are rejected: a provider can't slip in "passed" or "outcome"."""
+    model_config = ConfigDict(extra="forbid")
+
     console: list[ConsoleEvidence] = Field(default_factory=list, max_length=200)
     network: list[NetworkEvidence] = Field(default_factory=list, max_length=200)
-    storage: list[StorageState] | None = None  # None: storage was not re-checked
-    service_worker_scopes: list[str] | None = None  # None: not re-checked
+    storage: list[StorageState] | None = Field(default=None, max_length=25)  # None: storage was not re-checked
+    service_worker_scopes: list[Text] | None = Field(default=None, max_length=20)  # None: not re-checked
     observed_ms: int | None = None
-    error: str | None = None  # e.g. "debugger_unavailable", "tab_unreachable", "interrupted"
+    error: Short | None = None  # e.g. "debugger_unavailable", "tab_unreachable", "interrupted"
 
 
 # ---- Legacy stateless API ----------------------------------------------------------
@@ -288,6 +298,8 @@ class ActionResultRequest(BaseModel):
 
 
 class VerifyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")  # the verdict is the backend's: no client "passed"/"outcome"
+
     action_id: str
     observation: VerificationObservation
 

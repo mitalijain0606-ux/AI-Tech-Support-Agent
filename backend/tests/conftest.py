@@ -45,3 +45,13 @@ def _isolate_session_history():
         db.commit()
     finally:
         db.close()
+
+
+@pytest.fixture(autouse=True)
+def _independent_embedding_state():
+    """A remembered embedding-load failure (cooldown) must not leak between tests."""
+    from operon_backend import embeddings
+
+    embeddings.reset_unavailable_state()
+    yield
+    embeddings.reset_unavailable_state()

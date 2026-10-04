@@ -162,3 +162,28 @@ test("NEED_INFORMATION that needs the user waits for the user", async () => {
   await world.until(() => world.calls("/investigate").length === 2, "second investigation");
   assert.equal(world.calls("/investigate")[1].body.bundle.request_id, "req_2");
 });
+
+test("over-long context is truncated to the backend's bounds; over-long identifiers are dropped, never truncated", async () => {
+  const longUrl = `https://github.com/search?q=${"z".repeat(3000)}`;
+  const longKey = `cache_${"k".repeat(300)}`;
+  const { bundle } = await collect(evidenceRequest({ collectors: ["storage", "page"] }), {
+    tabs: [{ id: 5, url: longUrl }],
+    content: (msg) => {
+      if (msg.type === "CHECK_STORAGE") return { storage: [STORAGE_ROW, { key: longKey, present: true, parse_status: "syntax_error" }] };
+      if (msg.type === "INSPECT_PAGE") return { page: { url_path: `/${"p".repeat(3000)}`, title: "t", ready_state: "complete", service_worker_controlled: false, service_worker_scopes: ["/", `/${"s".repeat(2000)}`] } };
+      return {};
+    },
+  });
+  assert.equal(bundle.url.length, 1000);
+  assert.equal(bundle.page[0].url_path.length, 1000);
+  assert.deepEqual(bundle.page[0].service_worker_scopes, ["/"]);
+  assert.deepEqual(bundle.storage.map((s) => s.key), ["operon_demo_cache"]);
+});
+
+test("a secret near the truncation point is redacted before the URL is cut", async () => {
+  const token = ["gh", "p_", "A1b2C3d4E5f6G7h8J9k0", "A1b2C3d4E5f6G7h8J9k0"].join("");
+  const url = `https://github.com/x?${"q".repeat(980)}&access_token=${token}`;
+  const { bundle } = await collect(evidenceRequest({ collectors: ["page"] }), { tabs: [{ id: 5, url }] });
+  assert.ok(!bundle.url.includes(token.slice(0, 12)), bundle.url.slice(-60));
+  assert.ok(bundle.redaction_applied.length > 0);
+});

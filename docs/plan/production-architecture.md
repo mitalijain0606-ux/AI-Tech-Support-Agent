@@ -166,20 +166,26 @@ instance: today, `background.ts` is the *only* place session state lives,
 which works for a single-developer demo and stops being fine the moment
 this is a real backend with real uptime expectations.
 
-### API surface (session-oriented, replacing today's fire-and-forget calls)
+### API surface (session-oriented) — as implemented
 
 ```text
-POST /api/sessions                    — create a session
-POST /api/sessions/{id}/evidence      — submit a collected bundle
-POST /api/sessions/{id}/diagnose      — run classify→investigate→retrieve→diagnose→plan
-POST /api/sessions/{id}/policy        — evaluate the proposed action
-POST /api/sessions/{id}/verify        — record the verification result
-GET  /api/sessions/{id}               — current state (for reconnecting, or a future dashboard)
+POST /api/sessions                      create a session; returns it with the first evidence_request
+GET  /api/sessions/{id}                 current state (reconnect / resync after an extension restart)
+POST /api/sessions/{id}/investigate     submit the bundle answering the outstanding request and run
+                                        one bounded cycle (alias: /diagnose); diagnosis may be null
+POST /api/sessions/{id}/policy          evaluate the *pending* plan (client action_id/params must match, else 409)
+POST /api/sessions/{id}/approve         {approved} for REQUIRE_APPROVAL actions
+POST /api/sessions/{id}/action-result   {action_id, succeeded, detail} for the approved pending action
+POST /api/sessions/{id}/verify          {action_id, observation}; the backend decides — no client "passed"
 ```
 
-`background.ts` changes from "carry all context in each request" to
-"create a session once, then reference it" — a real refactor, not just a
-backend-side change.
+The planned separate `/evidence` endpoint was folded into `/investigate`:
+evidence is only ever submitted as the answer to a backend request, and
+the cycle runs in the same call. `background.ts` creates a session once and
+then references it. The full contract (validation, 409/422 cases) is in
+[`../../AGENT_ARCHITECTURE.md`](../../AGENT_ARCHITECTURE.md#as-implemented-core-functionality)
+and is tested by `backend/tests/test_api_contract.py` and the browser E2E
+suite.
 
 ## Deployment — one real change, and why
 
@@ -228,3 +234,14 @@ Phase 2 did. Proposed order, each phase independently useful and testable:
 
 Each phase is a real, working increment — not a partial rewrite you can't
 ship until the whole thing lands.
+
+### Status (validation milestone)
+
+| Phase | Status |
+|---|---|
+| A — Persistence | **Partial**: SQLAlchemy models and the session API are done on SQLite (`DATABASE_URL`). Postgres/Neon, Alembic and Redis are **not implemented**. |
+| B — Knowledge base | **Done** on SQLite (`knowledge_chunks`, brute-force cosine). pgvector is **not implemented**. |
+| C — Retrieve stage | **Done** (retrieval each changed cycle, `knowledge_refs` grounding, redacted history ingestion). The live embedding model is **unverified** where it can't be downloaded. See [`../TESTING.md`](../TESTING.md). |
+| D — Extension refactor | **Done**: session-oriented, request-driven, verified end to end in Chromium. |
+| E — Five-stage split / `eval.py` | **Not implemented**. Diagnosis is one grounded call per cycle. |
+| Deployment (Render/Neon/Upstash) | **Not implemented**: no deployment work has been done. |

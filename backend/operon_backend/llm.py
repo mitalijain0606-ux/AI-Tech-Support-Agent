@@ -16,6 +16,7 @@ UngroundedDiagnosis so the caller can fail safe.
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -30,6 +31,7 @@ from operon_backend.schemas import (
     InformationRequest,
     ProposedAction,
 )
+from operon_backend.tripwire import redact_credentials
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
@@ -292,8 +294,9 @@ def _rule_based_diagnosis(message: str, bundle: EvidenceBundle) -> Diagnosis:
 
 async def _call_groq(messages: list[dict[str, str]]) -> str:
     """The one network call to the model. Returns the raw JSON text."""
+    timeout = settings.groq_timeout_seconds
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 GROQ_API_URL,
                 headers={
@@ -307,14 +310,18 @@ async def _call_groq(messages: list[dict[str, str]]) -> str:
                     "response_format": {"type": "json_object"},
                 },
             )
-    except Exception as e:  # any transport failure becomes an LLMError
+    except httpx.TimeoutException as e:
+        raise LLMError(f"The model did not answer within {timeout:g}s (timeout)") from e
+    except Exception as e:  # any other transport failure becomes an LLMError
         raise LLMError(f"Failed to reach the model: {type(e).__name__}") from e
     if response.status_code != 200:
-        raise LLMError(f"Groq API error (status {response.status_code}): {response.text[:300]}")
+        hint = f", retry after {response.headers['retry-after']}s" if response.headers.get("retry-after") else ""
+        body = redact_credentials(response.text[:300])[0]
+        raise LLMError(f"Groq API error (status {response.status_code}{hint}): {body}")
     try:
         return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        raise LLMError(f"Unexpected Groq response shape: {e}") from e
+        raise LLMError(f"Unexpected Groq response shape: {type(e).__name__}") from e
 
 
 def build_user_content(
@@ -342,9 +349,41 @@ def build_user_content(
     )
 
 
+_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL)
+
+
 def _parse(raw: str) -> Diagnosis:
-    data = json.loads(raw)
+    """Parses the model's JSON answer into a Diagnosis.
+
+    Normalizes only *shape* quirks models commonly produce — a markdown code
+    fence, `null` where a list/object belongs, an empty object meaning "none".
+    It never touches content: grounding validation runs on the result, so
+    a normalized answer is held to exactly the same rules as any other."""
+    text = raw.strip()
+    fenced = _FENCE_RE.match(text)
+    if fenced:
+        text = fenced.group(1)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("the answer is not a JSON object")
     data.pop("engine", None)  # set by the backend, never by the model
+    for key in ("evidence_ids", "knowledge_refs"):
+        if data.get(key) is None:
+            data[key] = []
+    action = data.get("proposed_action")
+    if isinstance(action, dict):
+        if not action.get("action_id"):
+            data["proposed_action"] = None
+        elif action.get("params") is None:
+            action["params"] = {}
+    info = data.get("information_request")
+    if isinstance(info, dict):
+        if not info.get("collectors") and not info.get("reason"):
+            data["information_request"] = None
+        else:
+            info.setdefault("collectors", [])
+            if info.get("params") is None:
+                info["params"] = {}
     return Diagnosis.model_validate(data)
 
 

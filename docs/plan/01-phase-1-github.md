@@ -1,4 +1,4 @@
-# Phase 1 — GitHub demo (active)
+# Phase 1 — GitHub demo (active — core loop done, live services partly unverified)
 
 ## Goal
 
@@ -24,14 +24,12 @@ for us — same as any healthy production app).
   from the target site's backend. Anything requiring an app-specific
   capability (like `refresh_auth`) is out of scope, because GitHub can't
   grant Operon that.
-- **Persistence:** none in this phase — the backend was stateless, the
-  extension carried context between calls. This was a deliberate
-  simplification to prove the loop worked at all, not a rejection of
-  persistence — see [`production-architecture.md`](production-architecture.md)
-  for the real Postgres/Redis design that supersedes this.
-- **Pipeline:** one combined Groq call did classify + diagnose + plan.
-  The real five (six, counting Retrieve) independently-scored stages are
-  designed in [`production-architecture.md`](production-architecture.md).
+- **Persistence:** SQLite via SQLAlchemy (`SupportSession`), replacing the
+  original stateless design. Postgres/Redis remain later work — see
+  [`production-architecture.md`](production-architecture.md).
+- **Pipeline:** one grounded diagnosis call per bounded investigation
+  cycle (evidence → understanding → retrieval → diagnosis → decision). See
+  [`../../AGENT_ARCHITECTURE.md`](../../AGENT_ARCHITECTURE.md).
 
 ## Milestones
 
@@ -69,15 +67,23 @@ for us — same as any healthy production app).
   writes `dist/github/`. Verified: correct manifest, correctly-scoped
   `host_permissions`, 150KB popup bundle. Refuses to build `fake-saas` until
   its target config has a real domain, as designed.
-- [ ] **M9 — End-to-end run, live.** The whole loop, on real github.com,
-  witnessed working start to finish. **Blocked on manual verification** —
-  see the note below on why this couldn't be automated.
-- [ ] **M10 — Backend deployed.** Vercel deployment with `GROQ_API_KEY`
-  set as a runtime env var.
+- [~] **M9 — End-to-end run, live.** Partly done (validation milestone):
+  - the **actual built extension** loads in Playwright's Chromium and runs
+    the whole loop (evidence request → collection → investigation →
+    approval → execution → server-side verification → RESOLVED/ESCALATED)
+    against the real backend, on local fixture pages: `npm run e2e`;
+  - on **real github.com** (a public page, read-only, anonymous, nothing
+    approved), the content script loads, real evidence reaches the backend,
+    the investigation stays grounded, and a healthy page ends in
+    NEED_INFORMATION: `npm run e2e:github`;
+  - **still manual:** the seeded-bug demo on github.com with a real Groq key
+    and an approved fix (no Groq key was available to the validation run).
+- [ ] **M10 — Backend deployed.** Not started — no deployment work in the
+  validation milestone.
 - [ ] **M11 — Demo rehearsed.** Run through at least twice, ideally with a
   recording, before showing anyone else.
 
-## Known limitation — can't automate loading the extension (2026-09-11)
+## Known limitation — can't automate loading the extension in stable Chrome (2026-09-11)
 
 Chrome's `--load-extension` / `--disable-extensions-except` command-line
 flags no longer load an unpacked extension on this machine's stable Chrome
@@ -100,10 +106,11 @@ actually use this day to day —
    describe the problem, **Ask Operon**, **Approve**, and watch it reload
    and verify.
 
-If a CI step ever needs this automated, look into Puppeteer/Playwright's
-newer extension-testing APIs or a Chrome policy override rather than
-retrying the command-line flags — they were the first thing tried here and
-they're the thing that's actually blocked.
+Update (validation milestone): the restriction is specific to branded
+stable Chrome. Playwright's Chromium (headless, new mode) loads the
+unpacked build with `--load-extension`, and the browser E2E suites in
+`extension/e2e/` use exactly that. Manual loading in stable Chrome is still
+the path for a human demo.
 
 ## Resolved — model + structured output (2026-09-11)
 
