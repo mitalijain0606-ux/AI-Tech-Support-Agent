@@ -14,7 +14,9 @@ browser timing.
 Both suites start their own backend (`uvicorn`, a throwaway SQLite database,
 `GROQ_API_KEY` forced empty so diagnoses come from the labelled offline
 engine), build the extension pointed at it, and clean up afterwards. Neither
-needs credentials, and neither uses a signed-in browser profile.
+needs credentials, and neither uses a signed-in browser profile. Nothing is
+seeded around the application: the backend's own startup indexes the
+knowledge base into the fresh database, exactly as in a real deployment.
 
 ## Setup
 
@@ -43,6 +45,10 @@ popup like a user. The one test-only stub pins the extension's "active tab"
 to the fixture tab, because the popup is opened as a tab rather than over the
 page. Covered:
 
+- backend startup on a fresh database. With the embedding model available,
+  the backend indexes the knowledge base itself, and the corrupted-cache
+  cycle retrieves its own KB entry. Without the model, startup must log why,
+  and retrieval must report `empty_index`/`error`, never `no_match`.
 - session creation, evidence request, request-driven collection, investigation,
   retrieval (status recorded honestly), NEED_INFORMATION, plan, policy,
   approval, execution, and server-side verification through to RESOLVED
@@ -88,6 +94,6 @@ Exit codes: `0` all checks passed, `1` a check failed, `2` **BLOCKED**
 
 ## Not covered here
 
-Live Groq and live embeddings: both suites run the offline engine, and
-retrieval reports `error` when the embedding model can't be downloaded. See
-`backend/scripts/validate_services.py` and `backend/tests/live/` for those.
+Live Groq: both suites run the offline engine. Live model answers are
+covered by `backend/scripts/validate_services.py` and `backend/tests/live/`.
+Real embeddings are used here whenever the model can be downloaded.

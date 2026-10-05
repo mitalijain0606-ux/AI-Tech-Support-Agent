@@ -17,7 +17,7 @@ validation milestone. Status words mean:
 | Dependency | Configured by | Used for | Fallback when unavailable | In the offline suite |
 |---|---|---|---|---|
 | Groq chat/completions (`openai/gpt-oss-120b`, JSON mode) | `GROQ_API_KEY`, `GROQ_MODEL`, `GROQ_TIMEOUT_SECONDS` | diagnosis | labelled offline `rule_based` engine (no key), or a clean 400 that consumes nothing (key set, call failed) | `FakeGroq` (replaces only the network call) and `groq_stub.py` (a local OpenAI-compatible server driving the real HTTP client) |
-| Embedding model `sentence-transformers/all-MiniLM-L6-v2` (fastembed, ONNX, 384-d) | downloaded on first use; `EMBEDDING_RETRY_COOLDOWN_SECONDS` | knowledge retrieval, session-history ingestion | retrieval recorded as `error` (`EmbeddingUnavailable`), investigation continues; history ingestion skipped | real model if it can load, otherwise those tests fail with the cause (see below) |
+| Embedding model `sentence-transformers/all-MiniLM-L6-v2` (fastembed, ONNX, 384-d) | downloaded on first use from `huggingface.co` / `*.hf.co`; `EMBEDDING_RETRY_COOLDOWN_SECONDS` | indexing the KB at startup, knowledge retrieval, session-history ingestion | startup logs `Knowledge base not initialized` and keeps serving; retrieval is recorded as `empty_index` (nothing indexed) or `error` (`EmbeddingUnavailable`), never `no_match`; the investigation continues; history ingestion is skipped | the real model (tests that need it fail with the cause when it can't load) |
 | github.com | `extension/targets/github.json` | the target site | — | local fixture pages (`extension/e2e/fixtures`) |
 | Database | `DATABASE_URL` (default SQLite) | SupportSession, knowledge chunks | — | a throwaway SQLite file |
 
@@ -51,7 +51,15 @@ validation milestone. Status words mean:
   live validation.
 - **`test_embeddings_failure.py`**: model-load failure becomes
   `EmbeddingUnavailable` with its cause, the cooldown, retry after the
-  cooldown, and the investigation degrading cleanly.
+  cooldown, and the investigation degrading cleanly. An empty index raises
+  `KnowledgeIndexEmpty` instead of returning "no results".
+- **`test_knowledge_startup.py`**: the real FastAPI startup on a fresh
+  database indexes the curated KB with real 384-d vectors. Restarts are
+  idempotent (same chunks, nothing re-embedded). An existing KB is never
+  overwritten, and history alone doesn't count as an initialized KB. A
+  concurrent seed by another process isn't an error, and startup survives an
+  unavailable model. It also covers retrieval after startup (corrupted-cache
+  hit), a genuine `no_match`, and `empty_index` reported for an empty KB.
 - **`tests/live/`**: **real** services, skipped with the reason when
   unavailable. `OPERON_REQUIRE_LIVE=embeddings|groq|all` turns a skip into a
   failure. The live embedding tests refuse to run against a stand-in.
@@ -78,36 +86,47 @@ validation milestone. Status words mean:
 `ruff check .` (backend), `python docs/knowledge-base/scripts/kb_lint.py`,
 `npm audit`, `pip-audit -r backend/requirements.txt`.
 
-## Validation results (validation milestone, 2026-10-04)
+## Validation results
+
+Latest full run: 2026-10-05, after the knowledge-base startup fix. Network
+access then allowed `api.groq.com`, `huggingface.co` and its download hosts.
 
 | Check | Result |
 |---|---|
-| Backend, real environment (`pytest`) | 398 passed, 16 skipped (live, with reasons), **15 failed/errored**: every one needs the real embedding model, which can't be downloaded here (`EmbeddingUnavailable: ProxyError 403`) |
-| Backend, stand-in embedder (offline suite, `tests/live` excluded) | 411 passed, 2 failed: two semantic-ranking assertions a bag-of-words stand-in can't satisfy. They need the real model. |
-| New suites | safety matrix 158, API contract 35, Groq HTTP client 28, embedding failure 9, failure injection 4, tripwire 40: all pass |
-| `tests/live` with `OPERON_REQUIRE_LIVE=all` | 16 errors, as designed: both services are unavailable here and the gate refuses to skip them |
-| `validate_services.py` | embeddings **BLOCKED**, groq **BLOCKED** (see below) |
-| Extension unit tests | 52 passed (sanitizer 17) |
+| Backend, offline suite with the real embedding model (`pytest --ignore=tests/live`) | **422/422 passed**, twice. This was 413/413 before the startup fix, which added the 9 `test_knowledge_startup.py` tests. |
+| Retrieval / RAG / session-flow / startup / embedding-failure tests | 44/44 passed |
+| `tests/live` with `OPERON_REQUIRE_LIVE=all` | **16/16 passed**: 10 embedding tests in one batch, 6 Groq tests run a minute apart (see the rate-limit note) |
+| `validate_services.py --require all` | exit 0: embeddings **PASS** (9 checks), Groq **PASS** (3 checks) |
+| Extension unit tests | 52/52 passed (sanitizer 17) |
 | TypeScript | clean |
 | Builds | `github` (default and custom backend URL), `e2e-local`. `fake-saas` and a backend URL with a query string are correctly refused. The manifest is scoped to `https://github.com/*`. |
-| Browser E2E, deterministic (`npm run e2e`) | **52/52**, three runs in a row |
+| Browser E2E, deterministic (`npm run e2e`) | **54/54**, twice. This was 52/52 before the startup fix, which added 2 checks: startup indexed a fresh database, and the corrupted-cache cycle retrieved its KB entry. |
+| Browser E2E, model unavailable (empty model cache + `HF_HUB_OFFLINE=1`, lifecycle scenario) | 13/13: startup logs why the KB isn't indexed, and retrieval is recorded as `empty_index` |
 | Browser E2E, live github.com (`npm run e2e:github`) | **17/17** |
 | ruff | 4 findings, all present before this milestone, none new |
 | KB lint | ok: 19 sources, 17 error entries, 14 tools |
-| pip-audit | no known vulnerabilities |
-| npm audit | 4 high findings, all present before this milestone and dev-only: `braces`/`micromatch` via the Tailwind CLI's file watcher (`@tailwindcss/cli` → `@parcel/watcher`). They're used only at build time and not shipped in the extension. |
+| pip-audit (2026-10-04) | no known vulnerabilities |
+| npm audit (2026-10-04) | 4 high findings, all present before this milestone and dev-only: `braces`/`micromatch` via the Tailwind CLI's file watcher (`@tailwindcss/cli` → `@parcel/watcher`). They're used only at build time and not shipped in the extension. |
 
 ### Real services
 
 | Service | Status | Evidence |
 |---|---|---|
-| **Embeddings** (MiniLM via fastembed) | **BLOCKED** | The validation environment's egress policy denies `huggingface.co` (gateway 403 on CONNECT). fastembed's fallback bucket on `storage.googleapis.com` returns 403. The model never loaded, so retrieval was recorded as `error (EmbeddingUnavailable)` in every E2E run. The pipeline, failure path and cooldown are tested (MOCKED stand-in), and the live tests and `validate_services.py` are ready to run where the model can load. |
-| **Groq** | **BLOCKED** | No `GROQ_API_KEY` was available, and `api.groq.com` is also denied by the same egress policy. The real HTTP client is tested against a local OpenAI-compatible server (stubbed endpoint). Live model behaviour is unverified. |
-| **github.com** | **DONE** (read-only) | The actual `github` build in Chromium on `https://github.com/octocat/Hello-World` (anonymous, nothing approved). The content script loaded, real evidence (cookie metadata, page state) reached the backend with provenance, the investigation stayed grounded (no citations without evidence), a healthy page ended in NEED_INFORMATION (twice, bounded), and there were no extension runtime errors. |
+| **Groq** (`openai/gpt-oss-120b`) | **PASS** | `validate_services.py`: a grounded diagnosis citing only collected evidence, no action without evidence, and instructions planted in page text ignored. Live tests 6/6: grounded diagnosis, citing only the knowledge shown, no confident answer without evidence, an unsupported claim in the user's text can't produce an action, page-text instructions not followed, and the full pipeline with policy and approval enforced. In the validation environment the key is injected by the egress proxy, so the backend ran with a non-secret placeholder `GROQ_API_KEY` and the real key never entered the container. |
+| **Embeddings** (MiniLM via fastembed) | **PASS** | The real model downloads and loads (384-d, unit vectors). Semantic ordering is correct, and the persisted vectors reload unchanged. Live tests 10/10. |
+| **Retrieval** | **PASS** | Startup indexes 91 curated chunks into a fresh database. A corrupted-cache query retrieves `kb_kb_corrupted_cache` first, a blocked-request query retrieves `kb_kb_blocked_by_client`, and an unrelated query matches nothing. In the browser E2E the corrupted-cache cycle retrieves its entry through the full extension → backend path. |
+| **github.com** | **DONE** (read-only) | The actual `github` build in Chromium on `https://github.com/octocat/Hello-World` (anonymous, nothing approved). The content script loaded, and real evidence reached the backend with provenance. The investigation stayed grounded, a healthy page ended in NEED_INFORMATION (bounded), and there were no extension runtime errors. |
 
-### What the deterministic E2E covers (52 checks)
+**Groq rate limit (free tier).** 8,000 tokens per minute against roughly
+1.6–1.9k tokens per diagnosis. Running all live Groq tests back to back
+produces HTTP 429s, which the backend turns into a clean 400 that consumes
+nothing and reports the retry-after. The live tests pass when spaced about a
+minute apart. A multi-cycle session can hit the same limit within a minute.
 
-Session creation, the evidence request, request-driven collection,
+### What the deterministic E2E covers (54 checks)
+
+Backend startup on a fresh database (the backend indexes the knowledge base
+itself, and the corrupted-cache cycle retrieves its entry), session creation, the evidence request, request-driven collection,
 investigation, retrieval recorded honestly, NEED_INFORMATION, the plan,
 policy, approval, execution, and server-side verification through to
 RESOLVED. Then: a fix that doesn't stick (verification fails, an automatic
@@ -136,11 +155,17 @@ errors.
 | 8 | product | Found in final review, after fix 5: the extension never capped the tab URL, page path, service-worker scopes or storage key names, so a long real URL would have the whole cycle rejected (422). | The extension truncates context strings (after redaction, so a secret is never cut short of being recognised) and drops over-long identifiers (storage keys, scopes) rather than truncating them, because a truncated key could make a re-check falsely report "gone". | `collection.test.mjs` |
 | 9 | harness | The E2E harness was outside the repo, in scratch space. | `extension/e2e/` with fixtures, docs and npm scripts. | — |
 | 10 | harness | Popup Reset cleared the fixture's planted key after page load (order-dependent failure). The fixture page's own service worker was mistaken for the extension's. | Reset before the fixture loads. Filter workers by `chrome-extension://`. | E2E |
+| 11 | product | Found during live validation: startup never indexed the knowledge base, so a fresh database searched an empty index. Every search was recorded as `no_match` ("no knowledge chunk scored above the similarity floor"), which can't be told apart from a real search that found nothing. | Startup indexes the curated KB when none is indexed (idempotent, never overwrites an existing one, survives an unavailable model). `search()` raises `KnowledgeIndexEmpty` on an unindexed KB, recorded as `empty_index`. | `test_knowledge_startup.py`, `test_embeddings_failure.py`, E2E |
 
 ## Known limitations
 
-- Live Groq and the live embedding model are **unverified** in this
-  environment (blocked, see above). Both validation paths are in the repo.
+- Groq's free tier (8,000 tokens/min) can rate-limit a multi-cycle session.
+  The session isn't damaged, but the user sees an error and must retry.
+- If the embedding model can't load at startup, the KB stays empty until the
+  next restart with the model reachable (retrieval says `empty_index` until
+  then).
+- First startup on a cold cache waits for the model download and KB indexing
+  (seconds) before serving.
 - Session approval is not bound to a user identity: there is no production
   auth yet.
 - Sessions created before the core-functionality milestone (no

@@ -5,8 +5,10 @@
 //   npm run e2e            (from extension/; needs the backend's Python deps)
 //
 // The backend runs with GROQ_API_KEY empty, so diagnoses come from the
-// labelled offline engine; retrieval runs for real and is recorded as ok /
-// no_match / error depending on whether the embedding model can load here.
+// labelled offline engine. Retrieval is real: the backend's own startup
+// indexes the knowledge base into the fresh database (nothing is seeded
+// around it here). If the embedding model can't load, startup says so and
+// retrieval must report empty_index / error — never a fake no_match.
 import {
   FAKE_SECRETS,
   buildExtension,
@@ -29,7 +31,23 @@ const browser = await launchWithExtension(extPath);
 const { ctx, extId } = browser;
 console.log(`backend ${backend.url} · fixtures ${site.origin} · extension ${extId}`);
 
-const RETRIEVAL_STATUSES = new Set(["ok", "no_match", "error", "skipped_unchanged", "skipped_budget"]);
+// Real startup behaviour: a fresh database, indexed by the backend itself.
+console.log("\n== backend startup");
+const kb = backend.kbChunks();
+const curatedChunks = Object.entries(kb).filter(([type]) => type !== "history").reduce((n, [, c]) => n + c, 0);
+const kbIndexed = curatedChunks > 0;
+if (kbIndexed) {
+  check("startup indexed the knowledge base into a fresh database", !("history" in kb), JSON.stringify(kb));
+} else {
+  check(
+    "startup could not index the knowledge base and says why (embedding model unavailable)",
+    /Knowledge base not initialized/.test(backend.logs.join("")),
+    backend.logs.join("").match(/Knowledge base not initialized[^\n]*/)?.[0] ?? "no startup warning logged",
+  );
+}
+// With an indexed KB a search either finds something or genuinely doesn't;
+// without one it must say the index is empty (or the embedder failed).
+const RETRIEVAL_STATUSES = new Set(kbIndexed ? ["ok", "no_match", "skipped_unchanged", "skipped_budget"] : ["empty_index", "error", "skipped_budget"]);
 
 async function scenario(name, fixture, fn) {
   if (only && !only.test(name)) return;
@@ -97,6 +115,10 @@ await scenario("full lifecycle: insufficient evidence, user reproduces, approved
   check("resolved by server-side verification", b.phase === "RESOLVED" && b.verification_state.outcome === "passed", b.verification_state.message);
   check("the key was really cleared in the page", (await target.evaluate(() => localStorage.getItem("operon_demo_cache"))) === null);
   check("retrieval ran and was recorded honestly", b.retrievals.length > 0 && b.retrievals.every((r) => RETRIEVAL_STATUSES.has(r.status)), b.retrievals.map((r) => r.status).join(","));
+  if (kbIndexed) {
+    const hit = b.retrievals.find((r) => r.chunk_ids.includes("kb_kb_corrupted_cache"));
+    check("the corrupted-cache cycle retrieved its own KB entry", Boolean(hit), b.retrievals.map((r) => `${r.status}[${r.chunk_ids.join(" ")}]`).join(", "));
+  }
   check("diagnosis labelled with its engine", b.diagnoses.every((d) => d.engine === "rule_based"));
   check("activity and phase history are coherent", coherent(b), b.phase_history.map((p) => p.to).join(" → "));
 });

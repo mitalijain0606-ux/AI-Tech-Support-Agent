@@ -23,6 +23,20 @@ from operon_backend.schemas import EvidenceBundle
 
 SIMILARITY_FLOOR = 0.35
 
+# Resolved-session history is learned at runtime; everything else is the
+# curated knowledge base that startup seeds (knowledge.ensure_knowledge_base).
+HISTORY_SOURCE_TYPE = "history"
+
+
+class KnowledgeIndexEmpty(RuntimeError):
+    """The curated knowledge base has not been indexed, so nothing can be
+    searched. Distinct from a search that ran and found nothing relevant."""
+
+
+def knowledge_index_size(db: DBSession) -> int:
+    """How many curated (non-history) chunks are indexed."""
+    return db.query(KnowledgeChunk).filter(KnowledgeChunk.source_type != HISTORY_SOURCE_TYPE).count()
+
 
 def build_query(user_issue: str, bundle: EvidenceBundle) -> str:
     """What actually gets embedded to search — the complaint plus a short
@@ -121,7 +135,14 @@ def search(
     - subsystem: filter to specific subsystem ('api', 'auth', 'actions', etc.).
     - http_status: boosts error chunks with matching HTTP status codes.
     - include_stale / max_age_days: filter out chunks exceeding staleness window.
+
+    Raises KnowledgeIndexEmpty when the curated knowledge base isn't indexed
+    (unless only history was asked for), so an uninitialized index is never
+    reported as "searched, nothing relevant".
     """
+    history_only = bool(source_types) and set(source_types) <= {HISTORY_SOURCE_TYPE}
+    if not history_only and knowledge_index_size(db) == 0:
+        raise KnowledgeIndexEmpty("the knowledge base has not been indexed (0 curated chunks)")
     query_vec = embed(query_text)
     chunks = db.query(KnowledgeChunk).all()
     now_date = date.today()

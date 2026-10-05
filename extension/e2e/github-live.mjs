@@ -101,7 +101,7 @@ try {
   check("investigation cycle ran", b.diagnoses.length >= 1 || b.phase === "NEED_INFORMATION" || b.phase === "ESCALATED", `${b.phase} · ${b.resolution_state ?? ""}`);
   const cited = b.diagnoses.flatMap((d) => d.evidence_ids);
   check("every diagnosis cites only collected evidence", cited.every((id) => ids.has(id)), `cited [${cited.join(", ")}]`);
-  check("retrieval recorded with an honest status", b.retrievals.every((r) => ["ok", "no_match", "error", "skipped_unchanged", "skipped_budget"].includes(r.status)), b.retrievals.map((r) => `${r.status}${r.error ? `(${r.error})` : ""}`).join(", "));
+  check("retrieval recorded with an honest status", b.retrievals.every((r) => ["ok", "no_match", "empty_index", "error", "skipped_unchanged", "skipped_budget"].includes(r.status)), b.retrievals.map((r) => `${r.status}${r.error ? `(${r.error})` : ""}`).join(", "));
   const approvals = b.activity.filter((a) => a.kind === "approval");
   check("nothing was approved", approvals.every((a) => a.data.approved === false));
   const executed = b.attempted_actions.map((a) => a.action_id);

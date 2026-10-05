@@ -1,4 +1,4 @@
-# Phase 1 — GitHub demo (active — core loop done, live services partly unverified)
+# Phase 1 — GitHub demo (active — core loop done, live services validated)
 
 ## Goal
 
@@ -76,8 +76,10 @@ for us — same as any healthy production app).
     approved), the content script loads, real evidence reaches the backend,
     the investigation stays grounded, and a healthy page ends in
     NEED_INFORMATION: `npm run e2e:github`;
-  - **still manual:** the seeded-bug demo on github.com with a real Groq key
-    and an approved fix (no Groq key was available to the validation run).
+  - live Groq and the real embedding model are validated separately
+    (`backend/scripts/validate_services.py`, `backend/tests/live/`);
+  - **still manual:** the seeded-bug demo on github.com with real Groq and
+    an approved fix. The automated github.com run never approves anything.
 - [ ] **M10 — Backend deployed.** Not started — no deployment work in the
   validation milestone.
 - [ ] **M11 — Demo rehearsed.** Run through at least twice, ideally with a

@@ -18,10 +18,12 @@ from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session as DBSession
 
 from operon_backend.db_models import KnowledgeChunk, SessionRecord
 from operon_backend.embeddings import embed, embed_batch
+from operon_backend.retrieval import knowledge_index_size
 from operon_backend.tripwire import redact_credentials
 
 logger = logging.getLogger(__name__)
@@ -544,6 +546,27 @@ def ingest_all_knowledge(
     db.commit()
     stats["total_chunks"] = len(raw_units)
     return stats
+
+
+def ensure_knowledge_base(db: DBSession) -> dict[str, Any]:
+    """Startup initialization: index the curated knowledge base if — and only
+    if — none of it is indexed yet. An existing knowledge base is left exactly
+    as it is (refreshing it is `scripts/seed_kb.py`'s job), so restarts never
+    re-embed, duplicate or overwrite anything. Chunk ids are deterministic, so
+    two processes seeding at once can't duplicate either: the loser's insert
+    conflicts on the primary key, and it reports what the winner indexed.
+
+    Raises whatever the embedder raises (e.g. EmbeddingUnavailable); the
+    caller decides whether that is fatal."""
+    existing = knowledge_index_size(db)
+    if existing:
+        return {"status": "present", "chunks": existing}
+    try:
+        stats = ingest_all_knowledge(db)
+    except IntegrityError:
+        db.rollback()
+        return {"status": "present", "chunks": knowledge_index_size(db)}
+    return {"status": "seeded", "chunks": stats["total_chunks"]}
 
 
 def record_resolved_session_to_kb(

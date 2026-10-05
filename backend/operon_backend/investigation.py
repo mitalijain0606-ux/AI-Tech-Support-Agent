@@ -3,7 +3,7 @@
     evidence (requested by the backend, collected by the provider)
       → understanding   deterministic anomaly summary of the evidence window
       → retrieval       real knowledge search, recorded honestly (ok / no_match /
-                        error / skipped) — never fabricated
+                        empty_index / error / skipped) — never fabricated
       → diagnosis       LLM (or the labelled offline engine), grounding-validated
       → decision:
           need more evidence → a bounded EvidenceRequest, phase NEED_INFORMATION
@@ -55,7 +55,7 @@ from operon_backend.loop_driver import (
     update_or_create_hypothesis,
 )
 from operon_backend.planning import build_proposal
-from operon_backend.retrieval import RetrievedChunk, build_query, search
+from operon_backend.retrieval import KnowledgeIndexEmpty, RetrievedChunk, build_query, search
 from operon_backend.schemas import COLLECTORS, Diagnosis, EvidenceBundle
 from operon_backend.state_machine import IllegalTransition, SessionPhase, transition
 from operon_backend.tripwire import redact_credentials
@@ -141,6 +141,10 @@ async def retrieve(db: DBSession, session: SessionRecord, query: str) -> tuple[l
     else:
         try:
             chunks = await run_in_threadpool(search, db, query, tenant_id=_tenant(session))
+        except KnowledgeIndexEmpty:
+            # Nothing was searched — never report this as "no match".
+            record.update(status="empty_index")
+            reason = "knowledge base is empty (not initialized); nothing was searched — continuing without retrieved precedent"
         except Exception as exc:  # noqa: BLE001 — any embedder/store failure (network, ONNX, OS, DB)
             record.update(status="error", error=type(exc).__name__, error_detail=redact_credentials(str(exc))[0][:200])
             reason = f"knowledge search unavailable ({type(exc).__name__}); continuing without retrieved precedent"

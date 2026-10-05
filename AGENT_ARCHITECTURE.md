@@ -501,7 +501,9 @@ POST /api/sessions/{id}/investigate     one bounded cycle — investigation.py:
                      session; provenance (bundle_id, request_id, cycle); budget
     2 understanding  deterministic anomaly summary (evidence.understand)
     3 retrieval      real search each time the evidence changes; recorded as
-                     ok / no_match / error / skipped_unchanged / skipped_budget
+                     ok / no_match / empty_index / error / skipped_unchanged /
+                     skipped_budget (the KB is indexed at startup; empty_index
+                     means it wasn't, and nothing was searched)
     4 diagnosis      LLM (Groq) or the labelled offline "rule_based" engine;
                      grounding-validated, one regeneration, else ESCALATED
     5 decision       NEED_INFORMATION (new EvidenceRequest)
@@ -543,8 +545,8 @@ POST /api/sessions/{id}/verify          provider reports an observation; the bac
 - **Validation.** What has been verified against real services (and what
   is blocked or stubbed) is in [`docs/TESTING.md`](docs/TESTING.md). The
   "verified live against a real Groq call" notes in the phase list above
-  are historical. They were not re-run in the validation milestone, which
-  had no Groq key.
+  are historical. Live Groq and the real embedding model were re-validated
+  in the validation milestone.
 - **Extension.** Request-driven collectors, the four action executors
   (`unregister_service_worker` verified against a real service worker in
   Chromium), observation-only verification, resync from the backend after

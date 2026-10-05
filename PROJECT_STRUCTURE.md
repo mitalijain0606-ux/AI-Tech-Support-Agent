@@ -47,11 +47,11 @@ operon/
 │   │   ├── policy.py             closed action set + ALLOW / REQUIRE_APPROVAL / DENY
 │   │   ├── tripwire.py           credential detection, rejection and redaction (+ Git SHA rules)
 │   │   ├── embeddings.py         MiniLM via fastembed, with load-failure cooldown
-│   │   ├── retrieval.py          cosine search over knowledge_chunks
-│   │   ├── knowledge.py          KB ingestion; resolved-session history (redacted)
+│   │   ├── retrieval.py          cosine search over knowledge_chunks; KnowledgeIndexEmpty for an unindexed KB
+│   │   ├── knowledge.py          KB ingestion, ensure_knowledge_base (startup); resolved-session history (redacted)
 │   │   └── activity.py           append-only, redacted activity log
 │   ├── scripts/
-│   │   ├── seed_kb.py            index the knowledge base
+│   │   ├── seed_kb.py            refresh the KB index (startup indexes an empty database itself)
 │   │   └── validate_services.py  real Groq + real embeddings report: PASS / FAIL / BLOCKED
 │   └── tests/                    offline suite (pytest)
 │       ├── flow_helpers.py       drive a session over HTTP; FakeGroq (replaces only the network call)

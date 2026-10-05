@@ -241,7 +241,7 @@ ship until the whole thing lands.
 |---|---|
 | A — Persistence | **Partial**: SQLAlchemy models and the session API are done on SQLite (`DATABASE_URL`). Postgres/Neon, Alembic and Redis are **not implemented**. |
 | B — Knowledge base | **Done** on SQLite (`knowledge_chunks`, brute-force cosine). pgvector is **not implemented**. |
-| C — Retrieve stage | **Done** (retrieval each changed cycle, `knowledge_refs` grounding, redacted history ingestion). The live embedding model is **unverified** where it can't be downloaded. See [`../TESTING.md`](../TESTING.md). |
+| C — Retrieve stage | **Done** (retrieval each changed cycle, `knowledge_refs` grounding, redacted history ingestion). The real embedding model and retrieval are validated live, and startup indexes the KB on a fresh database. See [`../TESTING.md`](../TESTING.md). |
 | D — Extension refactor | **Done**: session-oriented, request-driven, verified end to end in Chromium. |
 | E — Five-stage split / `eval.py` | **Not implemented**. Diagnosis is one grounded call per cycle. |
 | Deployment (Render/Neon/Upstash) | **Not implemented**: no deployment work has been done. |

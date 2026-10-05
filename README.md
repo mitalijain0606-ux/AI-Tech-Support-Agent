@@ -74,7 +74,7 @@ backend/                 FastAPI + SQLAlchemy (SQLite by default)
   operon_backend/        session_service, investigation, evidence, planning,
                          verification, policy, tripwire, llm, retrieval,
                          embeddings, knowledge, activity, state_machine, ...
-  scripts/               seed_kb.py, validate_services.py
+  scripts/               seed_kb.py (refresh the KB index), validate_services.py
   tests/                 offline suite; tests/live/ for real Groq / embeddings
 extension/               MV3, TypeScript + React, esbuild per target
   src/                   background.ts, content.ts, popup/, lib/{types,sanitize}.ts
@@ -106,10 +106,22 @@ curl localhost:8000/health        # {"status":"ok"}
 | `EMBEDDING_RETRY_COOLDOWN_SECONDS` | `60` | after the embedding model fails to load, how long before trying again |
 | `DATABASE_URL` | `sqlite:///./operon.db` | any SQLAlchemy URL |
 
-Retrieval uses `sentence-transformers/all-MiniLM-L6-v2` via `fastembed`,
-downloaded on first use. If it can't be downloaded, retrieval is recorded as
-`error` and the investigation continues without precedent.
-`python scripts/seed_kb.py` indexes the knowledge base ahead of time.
+Retrieval uses `sentence-transformers/all-MiniLM-L6-v2` via `fastembed`
+(384-dimensional), downloaded on first use. Downloading it needs outbound
+access to `huggingface.co` and its download hosts (`*.hf.co`).
+
+**The knowledge base is indexed automatically at startup.** On a database
+with no curated knowledge chunks, the backend indexes the curated KB before
+it starts serving. That takes a few seconds, plus the model download on a
+cold cache. An already-indexed knowledge base is left untouched, so a restart
+never duplicates, re-embeds or overwrites anything.
+
+If the model can't be loaded at startup, the backend still starts and logs
+`Knowledge base not initialized`. Each investigation then records retrieval
+as `empty_index` (nothing was searched) or `error`, never as `no_match`, and
+continues without precedent. Restart once the model is reachable.
+`python scripts/seed_kb.py [--force]` is only needed to refresh an existing
+index after editing the KB sources.
 
 ### Extension
 
@@ -147,8 +159,8 @@ are in [`docs/TESTING.md`](docs/TESTING.md).
 | SupportSession lifecycle, evidence requests, bounded loop, grounding, planning, policy, approval, server-side verification, retry, escalation, activity | **Done** (unit, API and browser E2E tested) |
 | Extension against real github.com | **Done**, validated read-only on a public page (`npm run e2e:github`) |
 | Credential redaction (extension + backend) and Git SHA handling | **Done** (red-team matrix + E2E) |
-| Groq client | **Partial**: request/response contract, failure handling and normalization tested against a local OpenAI-compatible server. **Live Groq unverified in the validation environment** (no key). |
-| Embeddings / retrieval | **Partial**: pipeline and failure handling tested with a stand-in embedder. **Live model blocked in the validation environment** (download denied by its network policy). |
+| Groq | **Done**: validated against the live model (`validate_services.py`, 6/6 live tests). The free tier's 8,000 tokens/min can rate-limit a multi-cycle session. |
+| Embeddings / retrieval | **Done**: the real MiniLM model, the KB indexed automatically at startup, and retrieval validated live (10/10 live tests, browser E2E) |
 | Free-text user Q&A, live activity stream | Not implemented |
 | Deployment, production auth, Postgres/Redis, observability, learning loop evaluation, `eval.py` | Not implemented (later milestones) |
 | Phase 2 fake-SaaS target | Not started |

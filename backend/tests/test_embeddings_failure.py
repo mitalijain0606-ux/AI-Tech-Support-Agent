@@ -16,7 +16,8 @@ from operon_backend.config import settings
 from operon_backend.db_models import Base, KnowledgeChunk
 from operon_backend.embeddings import EmbeddingUnavailable, cosine_similarity
 from operon_backend.main import app
-from operon_backend.retrieval import search
+from operon_backend.db import SessionLocal
+from operon_backend.retrieval import KnowledgeIndexEmpty, search
 
 client = TestClient(app)
 
@@ -31,6 +32,20 @@ def failing_model(monkeypatch):
 
     monkeypatch.setattr(embeddings, "_load_model", load)
     return calls
+
+
+@pytest.fixture
+def indexed_kb():
+    """At least one curated chunk in the shared test database, so retrieval
+    really calls the embedder (an empty index is reported as empty_index
+    before anything is embedded — see test_knowledge_startup.py)."""
+    db = SessionLocal()
+    db.merge(KnowledgeChunk(id="kb_embedding_failure_probe", source_type="kb", source_id="probe", content_text="probe", embedding=[0.0] * 384, chunk_metadata={}))
+    db.commit()
+    yield
+    db.query(KnowledgeChunk).filter(KnowledgeChunk.id == "kb_embedding_failure_probe").delete()
+    db.commit()
+    db.close()
 
 
 def test_load_failure_becomes_embedding_unavailable_with_the_cause():
@@ -74,7 +89,7 @@ def test_reset_clears_the_remembered_failure(failing_model):
     assert failing_model["n"] == 2
 
 
-def test_investigation_degrades_cleanly_and_records_the_embedding_failure(failing_model):
+def test_investigation_degrades_cleanly_and_records_the_embedding_failure(failing_model, indexed_kb):
     s = new_session(client)
     first = submit(client, s, storage=[corrupt_storage()]).json()
     assert first["session"]["phase"] == "ACTION_PROPOSED"
@@ -92,7 +107,7 @@ def test_investigation_degrades_cleanly_and_records_the_embedding_failure(failin
     assert failing_model["n"] == 1
 
 
-def test_error_is_distinct_from_no_match_in_the_session_record(failing_model, monkeypatch):
+def test_error_is_distinct_from_no_match_in_the_session_record(failing_model, indexed_kb, monkeypatch):
     s = new_session(client)
     errored = submit(client, s, storage=[corrupt_storage()]).json()["session"]["retrievals"][0]
     embeddings.reset_unavailable_state()
@@ -115,10 +130,14 @@ def _vec(*head):
     return [*head] + [0.0] * (embeddings.EMBEDDING_DIM - len(head))
 
 
-def test_empty_knowledge_base_returns_nothing_without_error(tmp_path, monkeypatch):
-    monkeypatch.setattr("operon_backend.retrieval.embed", lambda text: _vec(1.0))
+def test_empty_knowledge_base_is_reported_as_empty_not_as_no_results(tmp_path, monkeypatch):
+    embedded = []
+    monkeypatch.setattr("operon_backend.retrieval.embed", lambda text: embedded.append(text) or _vec(1.0))
     db = _temp_db(tmp_path)
-    assert search(db, "anything at all") == []
+    with pytest.raises(KnowledgeIndexEmpty):
+        search(db, "anything at all")
+    assert embedded == []  # nothing was searched
+    assert search(db, "anything at all", source_types=["history"]) == []  # history-only lookups stay valid
 
 
 def test_dimension_and_persistence_round_trip(tmp_path, monkeypatch):

@@ -67,6 +67,8 @@ async function waitFor(fn, label, timeoutMs = 60_000) {
  * Starts the real FastAPI backend (uvicorn) on a free port with a throwaway
  * SQLite database. GROQ_API_KEY is forced empty so the labelled offline
  * engine diagnoses: the suite is deterministic and needs no credentials.
+ * Nothing is seeded around the application: the backend's own startup
+ * indexes the knowledge base into the fresh database (see kbChunks()).
  */
 export async function startBackend({ python = process.env.OPERON_E2E_PYTHON || "python3" } = {}) {
   const port = await freePort();
@@ -82,7 +84,9 @@ export async function startBackend({ python = process.env.OPERON_E2E_PYTHON || "
   proc.stderr.on("data", (d) => logs.push(String(d)));
   const url = `http://localhost:${port}`;
   try {
-    await waitFor(async () => (await fetch(`${url}/health`)).ok, "backend /health", 60_000);
+    // Startup indexes the knowledge base first (and downloads the embedding
+    // model on a cold cache), so allow for that before /health answers.
+    await waitFor(async () => (await fetch(`${url}/health`)).ok, "backend /health", 300_000);
   } catch (err) {
     proc.kill();
     throw new Error(`${err.message}\n--- backend log ---\n${logs.join("").slice(-3000)}`);
@@ -101,6 +105,9 @@ export async function startBackend({ python = process.env.OPERON_E2E_PYTHON || "
     },
     session: async (id) => (await fetch(`${url}/api/sessions/${id}`)).json(),
     dbBytes: () => (existsSync(dbPath) ? readFileSync(dbPath).toString("latin1") : ""),
+    /** Knowledge chunks in the database by source type (e.g. { kb: 3, error: 17 }). */
+    kbChunks: () =>
+      JSON.parse(execFileSync(python, ["-c", KB_CHUNKS_PY, dbPath], { encoding: "utf-8" }) || "{}"),
     /** The evidence bundles stored for a session, read straight from the database. */
     storedEvidence: (sessionId) =>
       JSON.parse(
@@ -112,6 +119,12 @@ export async function startBackend({ python = process.env.OPERON_E2E_PYTHON || "
     },
   };
 }
+
+const KB_CHUNKS_PY = `
+import json, sqlite3, sys
+rows = sqlite3.connect(sys.argv[1]).execute("select source_type, count(*) from knowledge_chunks group by source_type").fetchall()
+print(json.dumps(dict(rows)))
+`;
 
 const STORED_EVIDENCE_PY = `
 import json, sqlite3, sys

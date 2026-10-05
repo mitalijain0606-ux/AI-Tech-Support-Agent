@@ -83,9 +83,8 @@ graduated from "deferred" to "designed."
 
 - **[Phase 1](01-phase-1-github.md)** (core loop done): backend + the
   `github` target. Session-based, verified end to end in Chromium, and
-  checked read-only against real github.com. Live Groq and the live
-  embedding model are unverified in the validation environment. See
-  [`../TESTING.md`](../TESTING.md).
+  checked read-only against real github.com. Live Groq, the live embedding
+  model and retrieval are validated. See [`../TESTING.md`](../TESTING.md).
 - **[Production architecture](production-architecture.md)** (active):
   persistence, RAG, and the real five-stage pipeline, built on top of
   Phase 1's working loop rather than replacing it.

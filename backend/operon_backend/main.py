@@ -2,15 +2,17 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session as DBSession
 
-from operon_backend.db import get_db, init_db
+from operon_backend.db import SessionLocal, get_db, init_db
 from operon_backend.db_models import SessionRecord
 from operon_backend.evidence import EvidenceRejected
 from operon_backend.investigation import run_cycle
+from operon_backend.knowledge import ensure_knowledge_base
 from operon_backend.llm import LLMError, diagnose
 from operon_backend.policy import evaluate
 from operon_backend.schemas import (
@@ -41,9 +43,28 @@ from operon_backend.tripwire import TripwireHit, scan_raw_payload
 logger = logging.getLogger(__name__)
 
 
+def initialize_knowledge_base() -> dict | None:
+    """Indexes the curated knowledge base on a fresh database (a no-op when it
+    is already indexed). Never fatal: if the embedding model can't load, the
+    backend still serves, and retrieval reports the index as empty/unavailable
+    instead of pretending it searched."""
+    db = SessionLocal()
+    try:
+        result = ensure_knowledge_base(db)
+    except Exception as exc:  # noqa: BLE001 — embedder/network/disk; retrieval reports it per session
+        db.rollback()
+        logger.warning("Knowledge base not initialized (%s: %s); retrieval will report it", type(exc).__name__, str(exc)[:200])
+        return None
+    finally:
+        db.close()
+    logger.info("Knowledge base %s: %d curated chunk(s)", result["status"], result["chunks"])
+    return result
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    await run_in_threadpool(initialize_knowledge_base)
     yield
 
 
