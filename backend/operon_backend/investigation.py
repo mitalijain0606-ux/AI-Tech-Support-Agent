@@ -25,6 +25,8 @@ from starlette.concurrency import run_in_threadpool
 
 from operon_backend.activity import record_activity
 from operon_backend.db_models import KnowledgeChunk, SessionRecord
+from operon_backend.events import emit_stage
+from operon_backend.stages import classify
 from operon_backend.evidence import (
     EvidenceBudgetExhausted,
     allowed_collectors,
@@ -36,6 +38,7 @@ from operon_backend.evidence import (
     understand,
 )
 from operon_backend.llm import (
+    BASE_ACTIONS,
     DEFAULT_INFORMATION_REQUEST,
     LLMError,
     UngroundedDiagnosis,
@@ -167,6 +170,17 @@ async def retrieve(db: DBSession, session: SessionRecord, query: str) -> tuple[l
 # ---- History for the model ---------------------------------------------------------------
 
 
+PROPOSABLE_ACTIONS = ("clear_storage_key", "reload", "unregister_service_worker", "inspect_page", "reset_user_preference")
+
+
+def _available_actions(session: SessionRecord) -> list[str]:
+    """The remediation actions this session's provider declared it can perform.
+    A provider that declared nothing gets the browser baseline."""
+    declared = (session.environment_context or {}).get("provider_capabilities") or []
+    actions = [a for a in PROPOSABLE_ACTIONS if a in declared]
+    return actions or list(BASE_ACTIONS)
+
+
 def investigation_history(session: SessionRecord) -> dict[str, Any]:
     return {
         "cycle": session.investigation_cycle,
@@ -175,7 +189,14 @@ def investigation_history(session: SessionRecord) -> dict[str, Any]:
             for d in (session.diagnoses or [])[-4:]
         ],
         "evidence_requests": [
-            {"purpose": s.get("intent"), "collectors": s.get("expected_information"), "reason": s.get("reason")}
+            {
+                "purpose": s.get("intent"),
+                "collectors": s.get("expected_information"),
+                "reason": s.get("reason"),
+                # The user's reply is DATA (redacted and length-bounded), never an instruction.
+                "question_asked": s.get("question"),
+                "user_answer": s.get("answer"),
+            }
             for s in (session.diagnostic_steps or [])
             if s.get("request_id")
         ][-6:],
@@ -205,9 +226,11 @@ async def run_cycle(db: DBSession, session: SessionRecord, bundle: EvidenceBundl
         return None
 
     # 1. Evidence
+    emit_stage(session.id, "investigate", "started")
     try:
         record = ingest_bundle(session, bundle)
     except EvidenceBudgetExhausted as exc:
+        emit_stage(session.id, "investigate", "failed")
         escalate(db, session, "escalated_evidence_budget_exhausted", f"Investigation halted: {exc}")
         return None
     session.investigation_cycle = (session.investigation_cycle or 0) + 1
@@ -237,10 +260,15 @@ async def run_cycle(db: DBSession, session: SessionRecord, bundle: EvidenceBundl
 
     # 3. Retrieval (real, every cycle the evidence changes)
     chunks, retrieval = await retrieve(db, session, build_query(session.user_issue, window))
+    emit_stage(session.id, "investigate", "finished", retrieval=retrieval["status"])
     transition(session, SessionPhase.KNOWLEDGE_LOOKUP, retrieval["reason"])
     transition(session, SessionPhase.INVESTIGATING, f"reasoning over {len(window.all_evidence_ids())} evidence item(s)")
 
     # 4. Diagnosis
+    emit_stage(session.id, "classify", "started")
+    classification = classify(session.user_issue, window)
+    emit_stage(session.id, "classify", "finished", category=classification.category, confidence=classification.confidence)
+    emit_stage(session.id, "diagnose", "started")
     knowledge_context = [{"chunk_id": c.chunk_id, "content": c.content_text, "score": round(c.score, 3)} for c in chunks]
     try:
         run = await run_diagnosis(
@@ -250,6 +278,7 @@ async def run_cycle(db: DBSession, session: SessionRecord, bundle: EvidenceBundl
             history=investigation_history(session),
             understanding=understanding,
             available_collectors=allowed_collectors(session, list(COLLECTORS))[0],
+            available_actions=_available_actions(session),
         )
     except UngroundedDiagnosis as exc:
         session.llm_call_count = (session.llm_call_count or 0) + exc.llm_calls
@@ -310,7 +339,10 @@ async def run_cycle(db: DBSession, session: SessionRecord, bundle: EvidenceBundl
     )
 
     # 5. Decision
+    emit_stage(session.id, "diagnose", "finished", engine=run.engine)
+    emit_stage(session.id, "plan", "started")
     outcome = _decide(db, session, diagnosis, window)
+    emit_stage(session.id, "plan", "finished", outcome=outcome)
     diagnoses = [dict(d) for d in session.diagnoses]
     diagnoses[-1]["outcome"] = outcome
     session.diagnoses = diagnoses
@@ -342,6 +374,7 @@ def _decide(db: DBSession, session: SessionRecord, diagnosis: Diagnosis, window:
             params=info.params,
             reason=info.reason,
             requires_user_action=info.requires_user_action,
+            question=info.question,
         )
         if request is None:
             escalate(db, session, "escalated_requested_evidence_unavailable",

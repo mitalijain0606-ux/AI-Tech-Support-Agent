@@ -1,0 +1,10 @@
+{
+  "name": "buggy-cloud",
+  "private": true,
+  "type": "module",
+  "description": "A deliberately broken demo web app used to prove Operon works on an app other than GitHub.",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test 'tests/*.test.mjs'"
+  }
+}

@@ -1,0 +1,45 @@
+# Render blueprint for the Operon backend.  https://render.com/docs/blueprint-spec
+#
+# Why Render (a long-lived web service) and not a serverless platform: the API
+# keeps Server-Sent-Events connections open for minutes, holds an in-process
+# event bus, and loads a ~90 MB ONNX embedding model at start. See
+# docs/DEPLOYMENT.md for the full reasoning and the manual steps.
+#
+# NOTHING IN THIS FILE HAS BEEN DEPLOYED. Secrets are `sync: false`: Render asks
+# for them in the dashboard; they are never stored in this repository.
+services:
+  - type: web
+    name: operon-backend
+    runtime: python
+    rootDir: backend
+    plan: starter            # free instances sleep and have ephemeral state; fine for a demo only
+    region: oregon
+    healthCheckPath: /health
+    buildCommand: >-
+      pip install --require-hashes -r requirements.txt &&
+      python scripts/warm_model.py
+    # Migrations run before the server starts; production refuses to start on a database that is behind.
+    startCommand: >-
+      alembic upgrade head &&
+      uvicorn operon_backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: ENVIRONMENT
+        value: production
+      - key: AUTH_REQUIRED
+        value: "true"
+      - key: LOG_FORMAT
+        value: json
+      - key: TRUST_FORWARDED_FOR      # Render's proxy appends the client address to X-Forwarded-For
+        value: "true"
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
+      - key: FASTEMBED_CACHE_PATH     # inside the project dir, so the model downloaded at build time is deployed
+        value: /opt/render/project/src/backend/.cache/fastembed
+      - key: DATABASE_URL             # Neon (Postgres with pgvector): the pooled or direct connection string
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: REDIS_URL                # Upstash / Render Key Value; needed once there is more than one instance
+        sync: false

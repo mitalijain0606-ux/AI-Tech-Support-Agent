@@ -15,6 +15,12 @@ specific decision changes that.
 
 ## SDK provider + `packages/operon-core`
 
+> **Status:** a *minimal* SDK exists ([`sdk/operon-sdk.js`](../../sdk/operon-sdk.js)):
+> an app declares closed-list action names and the extension carries them through the
+> same pipeline. It is not the full provider described below (no calls into the app's
+> backend, no extracted `operon-core`, not published). See
+> [`../SDK_VS_EXTENSION.md`](../SDK_VS_EXTENSION.md).
+
 A second `CapabilityProvider` implementation — a JS/TS SDK a customer
 installs directly in their app, which can call their own backend APIs
 (something the extension fundamentally can't do, since it sits outside
@@ -40,6 +46,11 @@ free-tier constraints (Chromium doesn't fit in 512MB serverless RAM).
 
 ## `eval.py` — the fixture scoring harness
 
+> **Status:** a first version exists (`backend/eval.py`, 21 fixtures, results in
+> [`../IMPLEMENTATION_STATUS.md`](../IMPLEMENTATION_STATUS.md)). What remains is the
+> description below at larger scale: more, independently written fixtures and repeated
+> model runs.
+
 Once there are enough seeded bugs across both demo targets, a script that
 runs the pipeline against captured `EvidenceBundle` fixtures and scores
 classification/diagnosis/action accuracy — the mechanism for proving
@@ -57,7 +68,7 @@ tickets. Needs the persistence layer from
 ## Explicitly cut (from the original plan, still cut)
 
 - A desktop agent (stays a roadmap slide, not a deliverable)
-- Multi-tenant org management
+- Multi-tenant org management (tenants, API keys and roles now exist for isolation; there is still no org-management UI or admin API)
 - A staging environment
 - Container scanning
 - Predictive detection

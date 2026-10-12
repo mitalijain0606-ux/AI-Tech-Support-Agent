@@ -22,6 +22,8 @@ from typing import Any
 from operon_backend.activity import record_activity
 from operon_backend.loop_driver import MAX_EVIDENCE_ITEMS, evidence_item_count
 from operon_backend.policy import evaluate
+from operon_backend.signals import question_problems
+from operon_backend.tripwire import redact_free_text, scrub_url
 from operon_backend.schemas import (
     COLLECTORS,
     CitedEvidence,
@@ -63,6 +65,9 @@ class EvidenceBudgetExhausted(Exception):
 
 
 # ---- Requests ---------------------------------------------------------------------
+
+
+MAX_QUESTIONS = 3  # free-text questions the agent may put to the user in one session
 
 
 def provider_profile(session) -> dict[str, list[str]]:
@@ -112,10 +117,21 @@ def build_request(
     params: dict[str, Any] | None,
     reason: str,
     requires_user_action: bool,
+    question: str | None = None,
 ) -> tuple[EvidenceRequest | None, list[str]]:
     allowed, refused = allowed_collectors(session, collectors)
     if not allowed:
         return None, refused
+    # A free-text question is allowed only within limits and only if it passes
+    # the same scrutiny as any model output. One that does not is dropped (the
+    # evidence request still goes out) and the reason is noted.
+    if question is not None:
+        problems = question_problems(question)
+        if sum(1 for st in (session.diagnostic_steps or []) if st.get("question")) >= MAX_QUESTIONS:
+            problems.append(f"the session already asked {MAX_QUESTIONS} question(s)")
+        if problems:
+            refused = [*refused, "question dropped: " + "; ".join(problems)]
+            question = None
     request = EvidenceRequest(
         request_id=f"req_{uuid.uuid4().hex[:10]}",
         purpose=purpose,
@@ -124,6 +140,7 @@ def build_request(
         reason=reason[:500],
         requires_user_action=requires_user_action,
         cycle=(session.investigation_cycle or 0) + 1,
+        question=question.strip() if question else None,
     )
     return request, refused
 
@@ -154,6 +171,8 @@ def issue_request(session, request: EvidenceRequest, refused: list[str] | None =
             "expected_information": ", ".join(request.collectors),
             "request_id": request.request_id,
             "request_signature": request_signature(request),
+            "question": request.question,
+            "answer": None,
             "at": datetime.now(UTC).isoformat(),
         },
     ]
@@ -174,10 +193,52 @@ def issue_request(session, request: EvidenceRequest, refused: list[str] | None =
 # ---- Ingestion ---------------------------------------------------------------------
 
 
+def _scrub(items, fields: tuple[str, ...]):
+    out = []
+    for item in items:
+        update = {}
+        for name in fields:
+            value = getattr(item, name, None)
+            if isinstance(value, str) and value:
+                cleaned = redact_free_text(value)[0]
+                if name == "url":
+                    cleaned = scrub_url(cleaned)
+                if cleaned != value:
+                    update[name] = cleaned
+        out.append(item.model_copy(update=update) if update else item)
+    return out
+
+
+def scrub_bundle(bundle: EvidenceBundle) -> EvidenceBundle:
+    """Second line of defence behind the client's own redaction: text the PAGE wrote (console lines,
+    URLs, titles, parser messages) is redacted with the free-text heuristics before it is stored or
+    shown to the model. Fixed credential patterns are still rejected outright by the tripwire; this
+    catches formats no fixed pattern knows. Heuristic: see tripwire.redact_free_text."""
+    return bundle.model_copy(
+        update={
+            "console": _scrub(bundle.console, ("text", "url")),
+            "network": _scrub(bundle.network, ("url", "status_text", "failure_reason")),
+            "storage": _scrub(bundle.storage, ("error_message",)),
+            "page": _scrub(bundle.page, ("title",)),
+        }
+    )
+
+
+def scrub_observation(observation):
+    """The same protection for what a provider observed after an action."""
+    return observation.model_copy(
+        update={
+            "console": _scrub(observation.console, ("text", "url")),
+            "network": _scrub(observation.network, ("url", "status_text", "failure_reason")),
+        }
+    )
+
+
 def ingest_bundle(session, bundle: EvidenceBundle) -> dict[str, Any]:
     """Validates a bundle against the outstanding request and the session's
     evidence so far, then stores it with provenance. Returns the stored
     record. Raises EvidenceRejected / EvidenceBudgetExhausted."""
+    bundle = scrub_bundle(bundle)
     pending = session.evidence_request or None
     if pending and bundle.request_id and bundle.request_id != pending.get("request_id"):
         raise EvidenceRejected(

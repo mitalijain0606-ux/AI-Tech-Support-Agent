@@ -1,0 +1,5 @@
+{
+  "domain": "127.0.0.1",
+  "match": "http://127.0.0.1/*",
+  "note": "Local demo against Buggy Cloud (docs/LOCAL_DEVELOPMENT.md). Matches any http://127.0.0.1 page; never ship this build."
+}

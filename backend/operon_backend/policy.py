@@ -3,6 +3,11 @@ from typing import Any
 from operon_backend.schemas import PolicyDecision
 
 # Closed enum of permitted actions and their default policy evaluations
+# The only preferences `reset_user_preference` may name. A closed list, like the
+# actions themselves: the model picks from it, the backend validates against it,
+# the app's own handler validates again.
+RESETTABLE_PREFERENCES = ("timezone", "locale", "currency", "date_format")
+
 ACTION_POLICIES: dict[str, str] = {
     # Read-only
     "inspect_page": "ALLOW",
@@ -77,8 +82,21 @@ def evaluate(
         if "selector" in params and isinstance(params["selector"], str):
             validated_params["selector"] = params["selector"]
 
+    elif action_id == "reset_user_preference":
+        preference = params.get("preference")
+        if not isinstance(preference, str) or preference not in RESETTABLE_PREFERENCES:
+            return PolicyDecision(
+                action_id=action_id,
+                decision="DENY",
+                reason=f"Action 'reset_user_preference' requires 'preference' to be one of {list(RESETTABLE_PREFERENCES)}.",
+                validated_params={},
+            )
+        validated_params["preference"] = preference
+
     else:
-        validated_params = dict(params)
+        # Actions without a parameter schema take no parameters: nothing the
+        # caller sent is passed through.
+        validated_params = {}
 
     # 4. Return policy decision
     base_decision = ACTION_POLICIES[action_id]

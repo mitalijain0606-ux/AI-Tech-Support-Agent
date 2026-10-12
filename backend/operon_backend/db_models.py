@@ -20,6 +20,12 @@ class SessionRecord(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(UTC))
     source = Column(String, default="github")
 
+    # Who owns this session. Every read and write is checked against these on
+    # the server (auth.py); a session of another tenant does not exist as far
+    # as a caller is concerned.
+    tenant_id = Column(String, nullable=False, default="public", index=True)
+    created_by = Column(String, nullable=True)  # the creating principal's subject
+
     user_issue = Column(String, nullable=False)
     conversation_history = Column(MutableList.as_mutable(JSON), default=list)
 
@@ -86,3 +92,22 @@ class KnowledgeChunk(Base):
     embedding = Column(MutableList.as_mutable(JSON), nullable=False)
     chunk_metadata = Column(MutableDict.as_mutable(JSON), default=dict)
     created_at = Column(DateTime, default=lambda: datetime.now(UTC))
+
+
+class ApiKey(Base):
+    """A credential for the Operon API. Only a SHA-256 hash of the token is
+    stored (the token itself is shown once, when it is created), so a leaked
+    database does not leak usable keys. See auth.py."""
+
+    __tablename__ = "api_keys"
+
+    id = Column(String, primary_key=True)
+    key_hash = Column(String, nullable=False, unique=True, index=True)
+    key_prefix = Column(String, nullable=False)  # first characters, to recognise a key in a list
+    tenant_id = Column(String, nullable=False, index=True)
+    subject = Column(String, nullable=False)  # the user this key acts as
+    role = Column(String, nullable=False, default="user")  # viewer | user | admin
+    label = Column(String, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
+    last_used_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)

@@ -38,17 +38,24 @@ export function createWorld({
   debuggerAvailable = true,
   tabs = [TAB],
   initialStorage = {},
+  initialLocal = {},
   cookies = [],
   onReload = () => {},
 } = {}) {
   const log = []; // ordered record of side effects: attach/detach/reload/content/fetch
   const storage = { ...initialStorage };
+  const local = { ...initialLocal }; // chrome.storage.local (persistent settings, e.g. the access token)
   const listeners = { connect: [], debuggerEvent: [], tabUpdated: new Set() };
   const requests = [];
 
   const chrome = {
     runtime: { lastError: undefined, onConnect: { addListener: (fn) => listeners.connect.push(fn) } },
     storage: {
+      local: {
+        get: async (key) => (key in local ? { [key]: clone(local[key]) } : {}),
+        set: async (items) => Object.assign(local, clone(items)),
+        remove: async (key) => void delete local[key],
+      },
       session: {
         get: async (key) => (key in storage ? { [key]: clone(storage[key]) } : {}),
         set: async (items) => Object.assign(storage, clone(items)),
@@ -98,14 +105,36 @@ export function createWorld({
     const reqPath = url.replace("http://backend.test", "");
     const body = init.body ? JSON.parse(init.body) : null;
     const method = init.method ?? "GET";
-    requests.push({ method, path: reqPath, body });
+    requests.push({ method, path: reqPath, body, headers: { ...(init.headers ?? {}) } });
     log.push(`fetch:${method} ${reqPath}`);
     const out = await backend(method, reqPath, body, world);
     if (out instanceof Error) throw out;
-    const { status = 200, body: resBody, raw } = out && "status" in out ? out : { body: out };
+    const { status = 200, body: resBody, raw, stream } = out && ("status" in out || "stream" in out) ? out : { body: out };
+    const streamBody = stream
+      ? (() => {
+          // An SSE-style body: each string is one chunk, delivered with a short gap.
+          const encoder = new TextEncoder();
+          const chunks = [...stream];
+          let aborted = false;
+          init.signal?.addEventListener("abort", () => (aborted = true));
+          return {
+            getReader: () => ({
+              read: async () => {
+                if (aborted) throw new DOMException("aborted", "AbortError");
+                const next = chunks.shift();
+                if (next === undefined) return new Promise(() => {}); // an open stream: waits until aborted
+                await new Promise((r) => setTimeout(r, 5));
+                return { done: false, value: encoder.encode(next) };
+              },
+            }),
+          };
+        })()
+      : null;
     return {
       ok: status >= 200 && status < 300,
       status,
+      body: streamBody,
+      headers: { get: (name) => (out && out.headers ? out.headers[String(name).toLowerCase()] ?? null : null) },
       json: async () => (raw !== undefined ? JSON.parse(raw) : clone(resBody)),
     };
   };
@@ -113,6 +142,7 @@ export function createWorld({
   const world = {
     chrome,
     storage,
+    local,
     listeners,
     requests,
     log,
@@ -140,6 +170,8 @@ export function createWorld({
         console,
         URL,
         structuredClone,
+        AbortController,
+        TextDecoder,
       });
       vm.runInContext(code, context);
       await flush();

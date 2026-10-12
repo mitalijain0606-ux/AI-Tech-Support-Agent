@@ -16,6 +16,7 @@ import {
   type PolicyDecision,
   type PolicyResponse,
   type PopupCommand,
+  type ProgressLine,
   type StorageSignal,
   type StorageState,
   type SupportSession,
@@ -23,7 +24,8 @@ import {
   type VerificationPlan,
   type ViewPhase,
 } from "./lib/types";
-import { redactDeep } from "./lib/sanitize";
+import { describeProgress } from "./lib/progress";
+import { redactDeep, redactFreeText, scrubUrl } from "./lib/sanitize";
 
 // Injected at build time by scripts/build.mjs: OPERON_BACKEND_URL, else the
 // target's "backend_url", else http://localhost:8000 for local development.
@@ -68,6 +70,10 @@ const BUSY_PHASES: ReadonlySet<ViewPhase> = new Set(["collecting", "investigatin
 const STATE_KEY = "operon_state";
 let interruptedMidStep = false;
 
+readToken().then((t) => {
+  tokenSet = Boolean(t);
+});
+
 const restored: Promise<void> = chrome.storage.session
   .get(STATE_KEY)
   .then((items) => {
@@ -82,7 +88,7 @@ const restored: Promise<void> = chrome.storage.session
   });
 
 function setState(next: ExtensionState) {
-  state = next;
+  state = { ...next, tokenSet };
   for (const port of ports) {
     try {
       port.postMessage(state);
@@ -93,6 +99,64 @@ function setState(next: ExtensionState) {
   chrome.storage.session.set({ [STATE_KEY]: { state, nextEvidenceId } }).catch(() => {});
 }
 
+// ---- Live progress (Server-Sent Events) --------------------------------------------------
+
+const MAX_PROGRESS_LINES = 6;
+
+// Follows the session's event stream until stopped. Best effort by design: a
+// failed or closed stream never affects the investigation itself.
+function watchProgress(sessionId: string, onLines: (lines: ProgressLine[]) => void): { stop: () => void } {
+  const controller = new AbortController();
+  const lines: ProgressLine[] = [];
+  (async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/sessions/${sessionId}/events?after=${lastEventId(sessionId)}`, {
+        headers: { ...(await backendHeaders()), Accept: "text/event-stream" },
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) return;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        let split: number;
+        while ((split = buffer.indexOf("\n\n")) !== -1) {
+          const frame = buffer.slice(0, split);
+          buffer = buffer.slice(split + 2);
+          const data = frame.split("\n").find((l) => l.startsWith("data: "));
+          if (!data) continue;
+          let event: Record<string, any>;
+          try {
+            event = JSON.parse(data.slice(6));
+          } catch {
+            continue;
+          }
+          if (typeof event.id === "number") seenEventIds.set(sessionId, event.id);
+          const text = describeProgress(event);
+          if (text && lines[lines.length - 1]?.text !== text) {
+            lines.push({ id: event.id, text });
+            if (lines.length > MAX_PROGRESS_LINES) lines.shift();
+            onLines([...lines]);
+          }
+          if (event.type === "end") return;
+        }
+      }
+    } catch {
+      // aborted, offline, or the backend has no stream: progress just stops
+    }
+  })();
+  return { stop: () => controller.abort() };
+}
+
+// Resume point per session, so a step that opens the stream again doesn't replay old events.
+const seenEventIds = new Map<string, number>();
+function lastEventId(sessionId: string): number {
+  return seenEventIds.get(sessionId) ?? 0;
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -101,6 +165,11 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id || !tab.url) {
     throw new Error("No active tab found. Open the target site in this window first.");
+  }
+  // Browser-internal pages (chrome://, the Web Store, other extensions, file://, about:) do not allow
+  // content scripts or debugging; say so up front instead of failing halfway through.
+  if (!/^https?:\/\//i.test(tab.url) || /^https:\/\/(chrome\.google\.com\/webstore|chromewebstore\.google\.com)\//i.test(tab.url)) {
+    throw new Error(`Operon can't investigate this kind of page (${tab.url.split(":")[0]}:). Open the website you want help with in this tab, then try again.`);
   }
   return tab;
 }
@@ -354,7 +423,19 @@ async function collectForRequest(tab: chrome.tabs.Tab, request: EvidenceRequest)
   };
   // Pages log tokens and signed URLs; redact them here rather than have the
   // backend's tripwire reject the whole submission.
-  const { value, rules } = redactDeep(bundle);
+  const redacted = redactDeep(bundle);
+  const rules = new Set(redacted.rules);
+  // Console lines are free text written by the page: a key in a format no fixed rule knows can be
+  // in them, so they also get the free-text heuristics (see sdk/redact.js for what they do and don't catch).
+  const value = {
+    ...redacted.value,
+    network: redacted.value.network.map((n) => ({ ...n, url: scrubUrl(n.url) })),
+    console: redacted.value.console.map((c) => {
+      const r = redactFreeText(c.text);
+      r.rules.forEach((x) => rules.add(x));
+      return { ...c, text: r.text };
+    }),
+  };
   // Truncate only after redaction, so a secret is never cut short of being recognised.
   return {
     ...value,
@@ -364,7 +445,7 @@ async function collectForRequest(tab: chrome.tabs.Tab, request: EvidenceRequest)
       url_path: p.url_path.slice(0, MAX_URL),
       service_worker_scopes: p.service_worker_scopes.filter((scope) => scope.length <= MAX_URL),
     })),
-    redaction_applied: rules,
+    redaction_applied: [...rules],
   };
 }
 
@@ -376,12 +457,41 @@ class BackendError extends Error {
   }
 }
 
+// The access token the user pasted into the popup. Kept in chrome.storage.local
+// (this browser profile only), sent only to the backend, never in evidence.
+const TOKEN_KEY = "operon_token";
+let tokenSet = false;
+
+async function readToken(): Promise<string> {
+  try {
+    const items = await chrome.storage.local.get(TOKEN_KEY);
+    const value = items[TOKEN_KEY];
+    return typeof value === "string" ? value : "";
+  } catch {
+    return "";
+  }
+}
+
+async function backendHeaders(): Promise<Record<string, string>> {
+  const token = await readToken();
+  return token ? { "Content-Type": "application/json", Authorization: `Bearer ${token}` } : { "Content-Type": "application/json" };
+}
+
+// Free text that did not come from page evidence — what the user typed, or an
+// outcome string a page's own code supplied — is redacted here, in the browser,
+// BEFORE it is sent (and before any truncation, so a secret is never cut short
+// of being recognised). The backend redacts again as a second line of defence.
+function safeText(text: unknown, max?: number): string {
+  const redacted = redactFreeText(String(text ?? "")).text;
+  return max === undefined ? redacted : redacted.slice(0, max);
+}
+
 async function request<T>(method: "GET" | "POST", path: string, body: unknown, what: string): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${BACKEND_URL}${path}`, {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers: await backendHeaders(),
       body: method === "POST" ? JSON.stringify(body) : undefined,
     });
   } catch {
@@ -390,6 +500,13 @@ async function request<T>(method: "GET" | "POST", path: string, body: unknown, w
   if (!res.ok) {
     if (res.status === 404) {
       throw new BackendError("This session no longer exists on the backend. Reset to start a new one.", 404);
+    }
+    if (res.status === 401) {
+      throw new BackendError("The backend needs an access token. Enter one under \"Backend access\" and try again.", 401);
+    }
+    if (res.status === 429) {
+      const wait = res.headers?.get?.("retry-after");
+      throw new BackendError(`Too many requests — wait ${wait ? `${wait}s` : "a moment"} and try again.`, 429);
     }
     const err = await res.json().catch(() => ({}));
     throw new BackendError(typeof err.detail === "string" ? err.detail : `${what} failed (${res.status})`, res.status);
@@ -411,12 +528,23 @@ function asSession(value: unknown): SupportSession {
   return value as SupportSession;
 }
 
-async function createBackendSession(userIssue: string): Promise<SupportSession> {
+// Capabilities = what the browser itself can do, plus whatever closed-list
+// actions the page's Operon SDK offers. A page with no SDK adds nothing.
+async function providerCapabilities(tab: chrome.tabs.Tab): Promise<string[]> {
+  try {
+    const res = await sendToContent(tab.id!, { type: "DISCOVER_APP_ACTIONS" });
+    return [...PROVIDER_CAPABILITIES, ...(res.app_actions ?? [])];
+  } catch {
+    return [...PROVIDER_CAPABILITIES];
+  }
+}
+
+async function createBackendSession(userIssue: string, capabilities: string[] = PROVIDER_CAPABILITIES): Promise<SupportSession> {
   return asSession(
     await request("POST", "/api/sessions", {
-      user_issue: userIssue,
+      user_issue: safeText(userIssue),
       source: "extension",
-      provider_capabilities: PROVIDER_CAPABILITIES,
+      provider_capabilities: capabilities,
       collectors: COLLECTORS,
     }, "Starting a session"),
   );
@@ -443,13 +571,16 @@ async function callPolicy(session: SupportSession): Promise<PolicyResponse> {
   return { policy: res.policy, session: asSession(res.session) };
 }
 
-async function recordApproval(sessionId: string, approved: boolean): Promise<SupportSession> {
-  return asSession(await request("POST", `/api/sessions/${sessionId}/approve`, { approved }, "Recording approval"));
+// The decision names the plan it is about, so a decision on a plan that has since
+// been replaced is rejected by the backend instead of applying to the new one.
+async function recordApproval(sessionId: string, approved: boolean, proposalId?: string): Promise<SupportSession> {
+  const body = proposalId ? { approved, proposal_id: proposalId } : { approved };
+  return asSession(await request("POST", `/api/sessions/${sessionId}/approve`, body, "Recording approval"));
 }
 
 async function recordActionResult(sessionId: string, actionId: string, succeeded: boolean, detail: string): Promise<SupportSession> {
   return asSession(
-    await request("POST", `/api/sessions/${sessionId}/action-result`, { action_id: actionId, succeeded, detail: detail.slice(0, 1000) }, "Recording the action result"),
+    await request("POST", `/api/sessions/${sessionId}/action-result`, { action_id: actionId, succeeded, detail: safeText(detail, 1000) }, "Recording the action result"),
   );
 }
 
@@ -548,8 +679,15 @@ async function investigateCycle(tab: chrome.tabs.Tab, session: SupportSession) {
   setState({ phase: "collecting", session });
   const bundle = await collectForRequest(tab, req);
 
-  setState({ phase: "investigating", session });
-  const result = await callInvestigate(session.session_id, bundle);
+  setState({ phase: "investigating", session, progress: [] });
+  // Show what the backend is doing while it works (the LLM call can take seconds).
+  const watcher = watchProgress(session.session_id, (progress) => setState({ phase: "investigating", session, progress }));
+  let result: InvestigateResponse;
+  try {
+    result = await callInvestigate(session.session_id, bundle);
+  } finally {
+    watcher.stop();
+  }
   await advance(tab, result.session, result.diagnosis);
 }
 
@@ -593,8 +731,21 @@ async function executeAction(tab: chrome.tabs.Tab, session: SupportSession, poli
           ? { succeeded: true, detail: `unregistered ${res.unregistered} service worker(s)` }
           : { succeeded: false, detail: "no matching service worker registration was found" };
       }
+      case "reset_user_preference": {
+        const res = await sendToContent(tab.id!, { type: "INVOKE_APP_ACTION", action: "reset_user_preference", params });
+        const outcome = res.app_result ?? { ok: false, detail: "no answer from the page" };
+        if (outcome.ok) {
+          // The app re-renders in place; reload so verification observes a fresh load.
+          try {
+            return { succeeded: true, detail: outcome.detail, observation: await observeReload(tab, observeMs) };
+          } catch {
+            return { succeeded: true, detail: outcome.detail };
+          }
+        }
+        return { succeeded: false, detail: outcome.detail };
+      }
       default:
-        // Unreachable while PROVIDER_CAPABILITIES only declares the actions
+        // Unreachable while the capabilities declared only declares the actions
         // above — reported to the backend as a failure, never faked.
         return { succeeded: false, detail: `action '${pending.action_id}' isn't implemented by this provider` };
     }
@@ -713,6 +864,9 @@ const synced: Promise<void> = restored.then(() => (interruptedMidStep ? resyncFr
 
 // ---- Command handling -------------------------------------------------------
 
+const GUARDED_COMMANDS = new Set<PopupCommand["type"]>(["ASK_OPERON", "INVESTIGATE_AGAIN", "ANSWER", "APPROVE", "DENY"]);
+let commandInFlight = false;
+
 async function handleCommand(command: PopupCommand) {
   autoCycles = 0;
   switch (command.type) {
@@ -724,6 +878,15 @@ async function handleCommand(command: PopupCommand) {
       const tab = await getActiveTab();
       await sendToContent(tab.id!, { type: "SEED" });
       setState({ phase: "seeded" });
+      return;
+    }
+
+    case "SET_TOKEN": {
+      const token = command.token.trim();
+      if (token) await chrome.storage.local.set({ [TOKEN_KEY]: token });
+      else await chrome.storage.local.remove(TOKEN_KEY);
+      tokenSet = Boolean(token);
+      setState(state);
       return;
     }
 
@@ -744,7 +907,7 @@ async function handleCommand(command: PopupCommand) {
     case "ASK_OPERON": {
       const tab = await getActiveTab();
       nextEvidenceId = 1;
-      const session = await createBackendSession(command.message);
+      const session = await createBackendSession(command.message, await providerCapabilities(tab));
       if (session.phase !== "UNDERSTANDING") return render(session, null);
       await investigateCycle(tab, session);
       return;
@@ -761,11 +924,26 @@ async function handleCommand(command: PopupCommand) {
       return;
     }
 
+    case "ANSWER": {
+      // The user's free-text reply to the question attached to the evidence request.
+      // It is context for the next diagnosis only; the backend redacts and bounds it.
+      const { session } = state;
+      const asked = session?.evidence_request;
+      if (state.phase !== "needs_more_evidence" || !session || !asked?.question) return;
+      const text = safeText(String(command.text ?? "").trim(), 1000);
+      if (!text) return;
+      const next = asSession(
+        await request("POST", `/api/sessions/${session.session_id}/answer`, { request_id: asked.request_id, answer: text }, "Sending your answer"),
+      );
+      render(next, state.diagnosis ?? null);
+      return;
+    }
+
     case "APPROVE": {
       const { session, diagnosis, policy } = state;
       if (state.phase !== "awaiting_approval" || !session) return;
       const tab = await getActiveTab();
-      const next = await recordApproval(session.session_id, true);
+      const next = await recordApproval(session.session_id, true, session.pending_action?.proposal_id);
       await advance(tab, next, diagnosis ?? null, policy);
       return;
     }
@@ -773,7 +951,7 @@ async function handleCommand(command: PopupCommand) {
     case "DENY": {
       const { session, diagnosis, policy } = state;
       if (state.phase !== "awaiting_approval" || !session) return;
-      const next = await recordApproval(session.session_id, false);
+      const next = await recordApproval(session.session_id, false, session.pending_action?.proposal_id);
       render(next, diagnosis ?? null, policy);
       return;
     }
@@ -785,6 +963,13 @@ chrome.runtime.onConnect.addListener((port) => {
   port.onDisconnect.addListener(() => ports.delete(port));
   synced.then(() => port.postMessage(state));
   port.onMessage.addListener((command: PopupCommand) => {
+    // A second click (or a second popup) while a step that changes the session is still running
+    // must not repeat it: two APPROVEs would otherwise reach the backend and, if it were slow
+    // enough to answer neither first, run the fix twice. RESET and read-only commands always work.
+    if (GUARDED_COMMANDS.has(command.type)) {
+      if (commandInFlight) return;
+      commandInFlight = true;
+    }
     synced
       .then(() => handleCommand(command))
       .catch((err) => {
@@ -793,6 +978,9 @@ chrome.runtime.onConnect.addListener((port) => {
           session: state.session,
           message: err instanceof Error ? err.message : String(err),
         });
+      })
+      .finally(() => {
+        if (GUARDED_COMMANDS.has(command.type)) commandInFlight = false;
       });
   });
 });

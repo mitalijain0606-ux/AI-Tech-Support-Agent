@@ -1,4 +1,16 @@
-# Phase 2 — Fake SaaS demo (blocked on Phase 1)
+# Phase 2 — Fake SaaS demo
+
+> **Status (2026-10-10): built in a reduced form as [`buggy-cloud/`](../../buggy-cloud/),
+> tested locally only, not deployed.** What differs from this plan:
+> one screen, not 4–5; plain JavaScript, not Next.js; seven bugs switched on with
+> `?bug=N`, not a hidden diagnostics control; **not deployed** (no stable domain, no
+> `fake-saas` target — it is exercised through the `e2e-local` build); and it *does*
+> contain Operon code, one registration call to the one-file SDK in [`sdk/`](../../sdk/),
+> which this plan said it must not (the app-specific `reset_user_preference` fix needs
+> the app's cooperation; the storage, service-worker, network and CORS bugs need none).
+> See [`../IMPLEMENTATION_STATUS.md`](../IMPLEMENTATION_STATUS.md) and
+> [`../SDK_VS_EXTENSION.md`](../SDK_VS_EXTENSION.md). The milestone boxes below are
+> ticked only where that is true; the rest of this document is the original plan.
 
 ## Goal
 
@@ -46,19 +58,19 @@ this table is a starting point, not a commitment.
 
 ## Milestones
 
-- [ ] **M1 — Decide app concept, name, and stack.** Small Next.js app is
+- [x] **M1 — Decide app concept, name, and stack.** Small Next.js app is
   the likely default (matches the rest of the project's tooling), but
   confirm before building.
-- [ ] **M2 — Build the 4-5 screens** with realistic, production-looking
+- [~] **M2 — Build the 4-5 screens** (done as one screen) with realistic, production-looking
   UI — see the archived spec's design guidance (no neon, no fake logos,
   no obvious "bug button" in the normal UI).
 - [ ] **M3 — Deploy it** somewhere with a real, stable domain (Vercel).
-- [ ] **M4 — Wire 5+ seeded bugs** behind a hidden diagnostics control,
+- [x] **M4 — Wire 5+ seeded bugs** (7, via `?bug=N`) behind a hidden diagnostics control,
   each producing real, observable browser evidence, each independently
   resettable.
 - [ ] **M5 — Create `extension/targets/fake-saas.json`** with the real
   domain, run the build for that target → `dist/fake-saas/`.
-- [ ] **M6 — End-to-end run, live**, against the deployed fake app.
+- [~] **M6 — End-to-end run, live** (local only: `npm run e2e:buggy`, 57/57), against the deployed fake app.
 - [ ] **M7 — Rehearse both demos back to back** — GitHub, then a target
   switch, then the fake app, same extension family, same backend.
 

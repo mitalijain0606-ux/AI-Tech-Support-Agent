@@ -1,4 +1,4 @@
-# Operon — AI technical-support agent (GitHub slice)
+# Operon — AI technical-support agent
 
 Operon is a Chrome extension plus a backend that investigates a broken web
 page the way a support engineer would. It asks the browser for specific
@@ -12,6 +12,12 @@ reproducible bug, so the demo plants one itself: a namespaced, corrupted
 `localStorage` value (`operon_demo_cache`) that GitHub never reads.
 Everything downstream is genuine: real `chrome.debugger` capture, a real
 policy gate, a real fix in the live tab, and a real re-observation.
+
+A second application, [`buggy-cloud/`](buggy-cloud/), shows it is not
+GitHub-only: seven seeded bugs (`?bug=N`), an app-specific fix
+(`reset_user_preference`) through the Operon SDK ([`sdk/`](sdk/)) — usable either
+directly by the app (`init`) or carried by the extension — and end-to-end tests of both paths. What exists, what is verified and what is left:
+[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md).
 
 Planning and phase tracking live in [`docs/`](docs/). How every part is
 tested, and what has actually been validated against real services, is in
@@ -27,10 +33,11 @@ popup "Ask Operon"
     cookies [metadata only], page, reload_observe), redacts anything
     credential-shaped, and submits it
   → POST /api/sessions/{id}/investigate   one bounded cycle:
-       evidence → understanding → retrieval → diagnosis → decision
-       decision = NEED_INFORMATION (a new, specific request)
+       investigate (evidence, understanding, retrieval) → classify → diagnose → plan
+       plan = NEED_INFORMATION (optionally with one safe free-text question) (a new, specific request)
                 | ACTION_PROPOSED (a grounded remediation plan)
                 | ESCALATED (no safe action, limits reached, repeats)
+  → POST /api/sessions/{id}/answer       optional: the user's reply to that question
   → POST /api/sessions/{id}/policy        ALLOW / REQUIRE_APPROVAL / DENY for the pending plan
   → POST /api/sessions/{id}/approve       when required
   → extension executes the one approved action
@@ -46,7 +53,8 @@ stateless `/api/diagnose` and `/api/policy` endpoints are still served.
 ## Safety model
 
 - **Closed action set.** The model can only name one of `inspect_page`,
-  `reload`, `clear_storage_key`, `unregister_service_worker`. It never emits
+  `reload`, `clear_storage_key`, `unregister_service_worker`, and (only where
+  the app's SDK offers it) `reset_user_preference`. It never emits
   code or selectors. Every action goes through `policy.py`. The destructive
   ones always need approval.
 - **Grounding.** A diagnosis must cite evidence the model was actually shown
@@ -54,12 +62,15 @@ stateless `/api/diagnose` and `/api/policy` endpoints are still served.
   evidence, and its target must appear in that evidence. An invalid answer is
   regenerated once, then escalated. It is never acted on.
 - **Backend authority.** The backend decides verification from the evidence
-  the plan cited. A client cannot send `passed`/`outcome`, cannot report a
+  the plan cited — which is evidence the browser reports, so a compromised
+  client could report a clean page (see `docs/DEPLOYMENT.md`, "Known limits"). A client cannot send `passed`/`outcome`, cannot report a
   result for an action that wasn't approved, and cannot replay an evidence
   request. Inputs are size-bounded.
 - **Credentials.** Collectors never read cookie or storage values. The
   extension redacts credential-shaped strings before upload
-  (`extension/src/lib/sanitize.ts`). The backend tripwire (`tripwire.py`)
+  (`extension/src/lib/sanitize.ts`) — evidence, verification observations, and
+  also the free text the user types (the issue, answers to questions) and
+  outcome strings reported for an executed action. The backend tripwire (`tripwire.py`)
   rejects any evidence payload that still contains one, and redacts the
   user's own text, action-result details, activity entries and knowledge-base
   history. A Git commit SHA is kept only where it is unambiguous context:
@@ -70,21 +81,37 @@ stateless `/api/diagnose` and `/api/policy` endpoints are still served.
 ## Repository layout
 
 ```text
-backend/                 FastAPI + SQLAlchemy (SQLite by default)
-  operon_backend/        session_service, investigation, evidence, planning,
-                         verification, policy, tripwire, llm, retrieval,
-                         embeddings, knowledge, activity, state_machine, ...
-  scripts/               seed_kb.py (refresh the KB index), validate_services.py
+backend/                 FastAPI + SQLAlchemy (SQLite, or Postgres + pgvector)
+  operon_backend/        session_service, investigation, stages (classify), evidence,
+                         planning, verification, policy, auth, ratelimit, events,
+                         tripwire, llm, retrieval, embeddings, knowledge, ...
+  migrations/            Alembic (baseline + pgvector)
+  scripts/               manage_keys.py, seed_kb.py, validate_services.py, warm_model.py
+  eval.py, eval_data/    measured evaluation against ground-truth fixtures
   tests/                 offline suite; tests/live/ for real Groq / embeddings
 extension/               MV3, TypeScript + React, esbuild per target
-  src/                   background.ts, content.ts, popup/, lib/{types,sanitize}.ts
+  src/                   background.ts, content.ts, popup/, lib/{types,sanitize,progress,appbridge}.ts
   targets/               github.json (real), e2e-local.json (local fixtures), fake-saas.json (unset)
   tests/                 node:test unit tests against the real bundled source
-  e2e/                   browser E2E: deterministic local suite + live github.com check
-docs/                    plan/, knowledge-base/, archive/, TESTING.md
+  e2e/                   browser E2E: local suite, github.com demo, Buggy Cloud
+sdk/                     Operon SDK for sites you control: client (init/diagnose/decide), shared redaction, types, build
+buggy-cloud/             the second application: 7 seeded bugs
+docs/                    IMPLEMENTATION_STATUS, DEPLOYMENT, DEMO_REHEARSAL, SDK_VS_EXTENSION,
+                         TESTING, plan/, knowledge-base/, archive/
+render.yaml, .github/    deployment blueprint (never deployed) and CI (never run on GitHub)
 ```
 
 [`PROJECT_STRUCTURE.md`](PROJECT_STRUCTURE.md) has the per-file breakdown.
+
+## Quick start (everything local, one command)
+
+```bash
+cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r requirements.txt && cd ..
+cd extension && npm ci && cd ..
+node scripts/dev-local.mjs        # backend + Buggy Cloud + SDK panel; prints your token and the Chrome steps
+```
+
+Full guide, ports, Chrome instructions and troubleshooting: [`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md).
 
 ## Local setup
 
@@ -94,6 +121,7 @@ docs/                    plan/, knowledge-base/, archive/, TESTING.md
 cd backend
 pip install -r requirements.txt
 cp .env.example .env              # then set GROQ_API_KEY (optional, see below)
+python scripts/manage_keys.py create --tenant dev --subject you --role user   # prints your token ONCE
 uvicorn operon_backend.main:app --reload --port 8000
 curl localhost:8000/health        # {"status":"ok"}
 ```
@@ -104,7 +132,12 @@ curl localhost:8000/health        # {"status":"ok"}
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq chat model (JSON mode) |
 | `GROQ_TIMEOUT_SECONDS` | `30` | per-request timeout |
 | `EMBEDDING_RETRY_COOLDOWN_SECONDS` | `60` | after the embedding model fails to load, how long before trying again |
-| `DATABASE_URL` | `sqlite:///./operon.db` | any SQLAlchemy URL |
+| `DATABASE_URL` | `sqlite:///./operon.db` | any SQLAlchemy URL; for Postgres run `alembic upgrade head` first |
+| `AUTH_REQUIRED` | `true` (also in `.env.example`) | API keys (`python scripts/manage_keys.py create …`) pasted into the popup under *Backend access*. Set `false` only for throwaway local experiments; `ENVIRONMENT=production` refuses to start without auth |
+| `ENVIRONMENT` | `development` | `production` refuses an unsafe configuration |
+
+The rest (CORS, rate limits, Redis, logging) is in `backend/.env.example` and
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 Retrieval uses `sentence-transformers/all-MiniLM-L6-v2` via `fastembed`
 (384-dimensional), downloaded on first use. Downloading it needs outbound
@@ -134,7 +167,7 @@ OPERON_BACKEND_URL=https://api.example.com npm run build -- github   # another b
 
 Then go to `chrome://extensions`, turn on Developer mode, choose **Load
 unpacked**, and select `extension/dist/github/`. Open a github.com page. In
-the popup, **Seed demo bug** plants the corrupted key and **Ask Operon**
+the popup, paste your token under **Backend access**, then **Seed demo bug** plants the corrupted key and **Ask Operon**
 starts a session. Approve or deny the proposed fix and watch the result
 being verified. **Reset** clears the demo key.
 
@@ -147,6 +180,13 @@ cd extension && npm test                # unit tests
 npx tsc --noEmit -p .                   # typecheck
 npm run e2e                             # built extension + real backend + Chromium, local fixtures
 npm run e2e:github                      # same, against a real public github.com page (read-only)
+npm run e2e:demo                        # the approve / deny demo on a real github.com page
+npm run e2e:buggy                       # the second app through the extension: 7 seeded bugs
+npm run e2e:sdk                         # the same app through the SDK (no extension)
+npm run e2e:sdk-wire                    # SDK request bytes: fake secrets must not appear
+cd ../sdk && npm test                   # SDK unit tests
+npm run e2e:wire                        # fake secrets typed into the popup never reach the network (recording proxy)
+cd ../backend && python eval.py --engine offline   # measured evaluation (add --engine groq for the model)
 ```
 
 What each suite covers, what is stubbed, and the latest validation results
@@ -154,13 +194,8 @@ are in [`docs/TESTING.md`](docs/TESTING.md).
 
 ## Status
 
-| Area | Status |
-|---|---|
-| SupportSession lifecycle, evidence requests, bounded loop, grounding, planning, policy, approval, server-side verification, retry, escalation, activity | **Done** (unit, API and browser E2E tested) |
-| Extension against real github.com | **Done**, validated read-only on a public page (`npm run e2e:github`) |
-| Credential redaction (extension + backend) and Git SHA handling | **Done** (red-team matrix + E2E) |
-| Groq | **Done**: validated against the live model (`validate_services.py`, 6/6 live tests). The free tier's 8,000 tokens/min can rate-limit a multi-cycle session. |
-| Embeddings / retrieval | **Done**: the real MiniLM model, the KB indexed automatically at startup, and retrieval validated live (10/10 live tests, browser E2E) |
-| Free-text user Q&A, live activity stream | Not implemented |
-| Deployment, production auth, Postgres/Redis, observability, learning loop evaluation, `eval.py` | Not implemented (later milestones) |
-| Phase 2 fake-SaaS target | Not started |
+The authoritative table, with evidence and what was *not* verified, is
+[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md). In short:
+the investigation core, auth/tenancy, live progress, Postgres/Redis support,
+the second app and the evaluation are implemented and tested locally; the
+Render deployment and the CI workflow are written but **have never been run**.

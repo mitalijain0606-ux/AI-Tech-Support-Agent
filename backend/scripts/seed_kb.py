@@ -40,7 +40,7 @@ def main() -> None:
         print(f"  • Chapter sections:   {stats['sections']}")
         print(f"  • Error definitions:  {stats['errors']}")
         print(f"  • Tool contracts:     {stats['tools']}")
-        print(f"  -----------------------------")
+        print("  -----------------------------")
         print(f"  Total Indexed Chunks: {stats['total_chunks']}")
     finally:
         db.close()

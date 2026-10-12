@@ -1,4 +1,6 @@
+import math
 import re
+from collections import Counter
 
 
 class TripwireHit(Exception):
@@ -203,6 +205,77 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     for start, end, rule_name in reversed(spans):
         redacted = f"{redacted[:start]}[REDACTED:{rule_name}]{redacted[end:]}"
     return redacted, list(dict.fromkeys(rule for _, _, rule in spans))
+
+
+# ---- free text ------------------------------------------------------------------------------
+#
+# What a person types is not structured evidence. These extra rules apply only to
+# free text kept via `redact_free_text` (the user's issue, their answers, an
+# action's outcome string); evidence payloads keep the exact rules above.
+# Mirror of extension/src/lib/sanitize.ts `redactFreeText` — keep them in sync.
+# A heuristic: it can be evaded or fooled, and errs toward redacting.
+
+_FREE_TEXT_RULES: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "vendor_key",
+        re.compile(
+            r"\b(?:[spr]k_(?:live|test)_[A-Za-z0-9]{16,}|SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}"
+            r"|npm_[A-Za-z0-9]{30,}|pypi-[A-Za-z0-9_-]{30,}|glpat-[A-Za-z0-9_-]{20,}|ya29\.[A-Za-z0-9_-]{20,})"
+        ),
+    ),
+    (
+        "stated_secret",
+        re.compile(
+            r"\b(?:pass(?:word|wd|code|phrase)?|pwd|pin|secret|token|api[ _-]?key|key|credential)s?\b\s*(?:is|was|are|=|:)\s*[\"'`]?"
+            r"(?=[^\s\"'`]*\d)(?=[^\s\"'`]*[A-Za-z])[^\s\"'`,;]{6,}",
+            re.IGNORECASE,
+        ),
+    ),
+]
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_+/=-]{24,}")
+
+
+def shannon_entropy(value: str) -> float:
+    counts = Counter(value)
+    return -sum((n / len(value)) * math.log2(n / len(value)) for n in counts.values())
+
+
+def _looks_like_random_key(token: str) -> bool:
+    return (
+        any(c.islower() for c in token)
+        and any(c.isupper() for c in token)
+        and any(c.isdigit() for c in token)
+        and shannon_entropy(token) >= 3.9
+    )
+
+
+def redact_free_text(text: str) -> tuple[str, list[str]]:
+    """`redact_credentials` plus vendor prefixes, "password is hunter2x" and any
+    long, mixed-case, digit-bearing, high-entropy run of characters (the shape of
+    a random key, whatever it is called). Returns (text, rules that fired)."""
+    out, rules = redact_credentials(text or "")
+    fired = list(rules)
+    for name, pattern in _FREE_TEXT_RULES:
+        out, n = pattern.subn(f"[REDACTED:{name}]", out)
+        if n:
+            fired.append(name)
+    urls = _url_spans(out)
+
+    def swap(m: re.Match[str]) -> str:
+        if any(a <= m.start() and m.end() <= b for a, b in urls) or not _looks_like_random_key(m.group(0)):
+            return m.group(0)
+        if "high_entropy_token" not in fired:
+            fired.append("high_entropy_token")
+        return "[REDACTED:high_entropy_token]"
+
+    out = _TOKEN_RE.sub(swap, out)
+    return out, list(dict.fromkeys(fired))
+
+
+def scrub_url(url: str) -> str:
+    """A URL a PAGE reports as evidence: path segments that look like a random key are replaced.
+    (Free-text redaction leaves URLs alone because people paste links.) Mirror of sdk/redact.js scrubUrl."""
+    return _TOKEN_RE.sub(lambda m: "[REDACTED:high_entropy_token]" if _looks_like_random_key(m.group(0)) else m.group(0), url or "")
 
 
 def scan_raw_payload(raw_body: str) -> None:

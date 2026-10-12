@@ -496,19 +496,32 @@ make that visible and interactive rather than just true internally.
 ```text
 POST /api/sessions                      session + initial EvidenceRequest (UNDERSTANDING)
   provider collects exactly what was requested
-POST /api/sessions/{id}/investigate     one bounded cycle — investigation.py:
-    1 evidence       validated against the outstanding request; ids unique per
-                     session; provenance (bundle_id, request_id, cycle); budget
-    2 understanding  deterministic anomaly summary (evidence.understand)
-    3 retrieval      real search each time the evidence changes; recorded as
-                     ok / no_match / empty_index / error / skipped_unchanged /
-                     skipped_budget (the KB is indexed at startup; empty_index
-                     means it wasn't, and nothing was searched)
-    4 diagnosis      LLM (Groq) or the labelled offline "rule_based" engine;
-                     grounding-validated, one regeneration, else ESCALATED
-    5 decision       NEED_INFORMATION (new EvidenceRequest)
-                     | ACTION_PROPOSED (planning.build_proposal)
-                     | ESCALATED (no safe action, limits, repeats)
+POST /api/sessions/{id}/investigate     one bounded cycle — investigation.py, reported as
+                                        five named stages (stages.PIPELINE_STAGES):
+    investigate  evidence: validated against the outstanding request; ids unique
+                 per session; provenance (bundle_id, request_id, cycle); budget
+                 + understanding: deterministic anomaly summary (evidence.understand)
+                 + retrieval: real search each time the evidence changes; recorded as
+                 ok / no_match / empty_index / error / skipped_unchanged /
+                 skipped_budget (the KB is indexed at startup; empty_index
+                 means it wasn't, and nothing was searched)
+    classify     stages.classify — plain code, no model: storage_corruption,
+                 blocked_by_client, invalid_preference, service_worker_stale,
+                 network_error (HTTP, CORS, failed fetch), auth_failure, dom_error,
+                 suspicious_content (text addressed to an AI), insufficient_evidence.
+                 Text that addresses an AI is excluded from every other category.
+                 Passed to the model as a hint it may disagree with; also the
+                 offline engine's whole decision
+    diagnose     LLM (Groq) or the labelled offline "rule_based" engine;
+                 grounding-validated, one regeneration, else ESCALATED
+    plan         NEED_INFORMATION (new EvidenceRequest, optionally with one
+                 validated free-text question)
+                 | ACTION_PROPOSED (planning.build_proposal)
+                 | ESCALATED (no safe action, limits, repeats)
+POST /api/sessions/{id}/answer          the user's reply to that question: tripwire-
+                                        scanned, redacted, bounded, one per question;
+                                        context for the next diagnosis (as data), never
+                                        an approval
 POST /api/sessions/{id}/policy          evaluates the *pending* proposal against the
                                         capabilities recorded at session creation
 POST /api/sessions/{id}/approve         required for REQUIRE_APPROVAL actions
@@ -517,13 +530,24 @@ POST /api/sessions/{id}/action-result   must name the pending action; needs poli
 POST /api/sessions/{id}/verify          provider reports an observation; the backend
                                         decides (verification.py) → RESOLVED, or a
                                         retry EvidenceRequest, or ESCALATED
+GET  /api/sessions/{id}/events          Server-Sent Events: every stage start/finish and
+                                        activity entry, replayed then live
 ```
+
+Every session endpoint resolves a principal (API key → tenant, subject, role)
+and checks the session against it (`auth.py`): another tenant's or another
+user's session is a 404, a read-only key gets 403 on writes, and an approval
+names the `proposal_id` it is about.
 
 - **Grounding.** Citations must name evidence shown to the model (the
   evidence window since the last remediation attempt) and retrieved
   knowledge chunks; a proposed action must cite evidence and stay in the
-  closed action set; `clear_storage_key`/`unregister_service_worker`
-  targets must appear in the evidence. Evidence, retrieved knowledge and
+  closed action set *and in the session's declared capabilities*
+  (`available_actions`); `clear_storage_key`/`unregister_service_worker`
+  targets must appear in the evidence; `reset_user_preference` must name an
+  allowlisted preference that the cited evidence mentions; a question must pass
+  `signals.question_problems` (no links, no requests for secrets, no text that
+  reads as an instruction to an AI). Evidence, retrieved knowledge and
   the user's text are presented to the model as untrusted data.
 - **Verification** is decided server-side from the evidence the plan
   cited (embedded in the plan): cited console/network signals must not
@@ -547,6 +571,8 @@ POST /api/sessions/{id}/verify          provider reports an observation; the bac
   "verified live against a real Groq call" notes in the phase list above
   are historical. Live Groq and the real embedding model were re-validated
   in the validation milestone.
+- **App-specific actions.** An app that includes `sdk/operon-sdk.js` can offer
+  `reset_user_preference`; see [`docs/SDK_VS_EXTENSION.md`](docs/SDK_VS_EXTENSION.md).
 - **Extension.** Request-driven collectors, the four action executors
   (`unregister_service_worker` verified against a real service worker in
   Chromium), observation-only verification, resync from the backend after

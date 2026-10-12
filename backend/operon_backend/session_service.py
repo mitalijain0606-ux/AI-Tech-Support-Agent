@@ -17,13 +17,16 @@ from datetime import UTC, datetime
 from sqlalchemy.orm import Session as DBSession
 
 from operon_backend.activity import record_activity
+from operon_backend.auth import ANONYMOUS, Principal
 from operon_backend.db_models import SessionRecord
 from operon_backend.evidence import (
     DEFAULT_COLLECTORS,
     RECOLLECT_COLLECTORS,
     build_request,
     issue_request,
+    scrub_observation,
 )
+from operon_backend.events import emit_stage
 from operon_backend.investigation import next_cycle_blocked
 from operon_backend.knowledge import record_resolved_session_to_kb
 from operon_backend.loop_driver import (
@@ -41,7 +44,7 @@ from operon_backend.schemas import (
     VerificationPlan,
 )
 from operon_backend.state_machine import IllegalTransition, SessionPhase, transition
-from operon_backend.tripwire import redact_credentials
+from operon_backend.tripwire import redact_free_text
 from operon_backend.verification import evaluate as evaluate_verification
 
 logger = logging.getLogger(__name__)
@@ -57,17 +60,23 @@ def create_session(
     source: str = "github",
     provider_capabilities: list[str] | None = None,
     collectors: list[str] | None = None,
+    principal: Principal = ANONYMOUS,
 ) -> SessionRecord:
     # The user's own words are free text that reaches the database, the LLM,
     # retrieval and the knowledge base — redact anything credential-shaped
     # here, once, so no later step ever sees the raw value.
-    user_issue, redactions = redact_credentials(user_issue)
+    user_issue, redactions = redact_free_text(user_issue)
     if redactions:
         logger.warning("Redacted credential-shaped value(s) from user_issue: %s", ", ".join(redactions))
     record = SessionRecord(
         id=str(uuid.uuid4()),
         user_issue=user_issue,
         source=source,
+        tenant_id=principal.tenant_id,
+        created_by=principal.subject,
+        # The tenant also scopes what this session may retrieve and contribute
+        # (resolved-session history is only visible within its tenant).
+        user_context={"tenant_id": principal.tenant_id},
         phase=SessionPhase.UNDERSTANDING.value,
         conversation_history=[
             {
@@ -175,20 +184,67 @@ def apply_policy(db: DBSession, session: SessionRecord, request: SessionPolicyRe
     return decision
 
 
+# ---- Free-text answer ---------------------------------------------------------------------
+
+
+MAX_ANSWER_CHARS = 1000
+
+
+def record_answer(db: DBSession, session: SessionRecord, request_id: str, answer: str, principal: Principal = ANONYMOUS) -> SessionRecord:
+    """Stores the user's reply to the question attached to the outstanding
+    evidence request. The reply is context for the next diagnosis and is treated
+    as untrusted data there: it is redacted, bounded, and shown to the model
+    inside the investigation history, never as an instruction. It does not move
+    the session and it never approves or authorizes anything."""
+    require_phase(session, SessionPhase.NEED_INFORMATION)
+    if not principal.can_write:
+        raise PermissionError("A read-only key cannot answer a question.")
+    request = session.evidence_request or {}
+    if request.get("request_id") != request_id or not request.get("question"):
+        raise RequestMismatch("There is no open question for that request.")
+    steps = [dict(st) for st in (session.diagnostic_steps or [])]
+    step = next((st for st in steps if st.get("request_id") == request_id), None)
+    if step is None or step.get("answer"):
+        raise RequestMismatch("That question was already answered.")
+    text, _ = redact_free_text(answer.strip()[:MAX_ANSWER_CHARS])
+    step["answer"] = text
+    step["answered_by"] = principal.subject
+    session.diagnostic_steps = steps
+    record_activity(session, "user_answer", f"answered by {principal.subject}", request_id=request_id, chars=len(text))
+    db.commit()
+    db.refresh(session)
+    return session
+
+
 # ---- Approval ---------------------------------------------------------------------------
 
 
-def record_approval(db: DBSession, session: SessionRecord, approved: bool) -> SessionRecord:
+def record_approval(
+    db: DBSession,
+    session: SessionRecord,
+    approved: bool,
+    principal: Principal = ANONYMOUS,
+    proposal_id: str | None = None,
+) -> SessionRecord:
+    """Records the user's decision on the pending plan. The caller has already
+    been authorized to act on this session (auth.require_session_access); here
+    the decision is bound to who made it and to *which* plan it was made on."""
     require_phase(session, SessionPhase.WAITING_FOR_APPROVAL)
+    if not principal.can_write:
+        raise PermissionError("A read-only key cannot approve or decline an action.")
     pending = _pending(session)
+    if proposal_id is not None and proposal_id != pending.get("proposal_id"):
+        raise RequestMismatch("The decision names a different proposal than the one awaiting approval.")
     session.approval = {
         "approved": approved,
         "proposal_id": pending.get("proposal_id"),
         "action_id": pending.get("action_id"),
+        "approved_by": principal.subject,
+        "approved_by_role": principal.role,
         "at": datetime.now(UTC).isoformat(),
     }
-    record_activity(session, "approval", "approved by the user" if approved else "declined by the user",
-                    proposal_id=pending.get("proposal_id"), approved=approved)
+    record_activity(session, "approval", f"{'approved' if approved else 'declined'} by {principal.subject}",
+                    proposal_id=pending.get("proposal_id"), approved=approved, decided_by=principal.subject)
 
     if approved:
         transition(session, SessionPhase.EXECUTING, "user approved the proposed action")
@@ -220,7 +276,7 @@ def record_action_result(db: DBSession, session: SessionRecord, action_id: str |
     require_phase(session, SessionPhase.EXECUTING)
     pending = _require_pending_action(session, action_id)
     _execution_authorized(session, pending)
-    detail, _ = redact_credentials(detail or "")
+    detail, _ = redact_free_text(detail or "")
 
     session.action_attempt_count = (session.action_attempt_count or 0) + 1
     session.attempted_actions = [
@@ -271,7 +327,9 @@ def record_verification(db: DBSession, session: SessionRecord, action_id: str | 
     require_phase(session, SessionPhase.VERIFYING)
     pending = _require_pending_action(session, action_id)
     plan = VerificationPlan.model_validate(pending["verification"]) if pending.get("verification") else None
-    result = evaluate_verification(plan, observation)
+    emit_stage(session.id, "verify", "started")
+    result = evaluate_verification(plan, scrub_observation(observation))
+    emit_stage(session.id, "verify", "finished", outcome=result.outcome)
 
     session.verification_state = {
         "outcome": result.outcome,

@@ -1,0 +1,15 @@
+{
+  "name": "operon-sdk",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Operon SDK: lets a web app you control use the Operon backend pipeline. Not published to npm.",
+  "type": "module",
+  "main": "operon-sdk.js",
+  "types": "operon-sdk.d.ts",
+  "files": ["operon-sdk.js", "redact.js", "operon-sdk.d.ts", "redact.d.ts", "dist"],
+  "scripts": {
+    "test": "node --test 'tests/*.test.mjs'",
+    "check": "node --check operon-sdk.js && node --check redact.js",
+    "build": "node scripts/build.mjs"
+  }
+}

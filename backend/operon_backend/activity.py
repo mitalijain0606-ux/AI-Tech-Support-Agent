@@ -13,6 +13,7 @@ counts, decisions and short summaries — never raw evidence or page content.
 from datetime import UTC, datetime
 from typing import Any
 
+from operon_backend.events import ACTIVITY, bus
 from operon_backend.tripwire import redact_credentials
 
 MAX_ACTIVITY_ENTRIES = 300
@@ -32,14 +33,16 @@ def record_activity(session, kind: str, summary: str, **data: Any) -> None:
     entries = list(session.activity or [])
     if len(entries) >= MAX_ACTIVITY_ENTRIES:
         return
-    entries.append(
-        {
-            "seq": len(entries) + 1,
-            "at": datetime.now(UTC).isoformat(),
-            "kind": kind,
-            "phase": session.phase,
-            "summary": _scrub(summary),
-            "data": _scrub(data),
-        }
-    )
+    entry = {
+        "seq": len(entries) + 1,
+        "at": datetime.now(UTC).isoformat(),
+        "kind": kind,
+        "phase": session.phase,
+        "summary": _scrub(summary),
+        "data": _scrub(data),
+    }
+    entries.append(entry)
     session.activity = entries
+    # Live view of the same (already scrubbed) entry; the committed activity
+    # list stays the record. See events.py.
+    bus.publish(session.id, ACTIVITY, entry=entry)

@@ -35,6 +35,17 @@ _unavailable_until = 0.0
 _unavailable_reason = ""
 
 
+def status() -> dict:
+    """What a readiness probe needs: is the model loaded, and if loading failed
+    recently, why (the exception type only)."""
+    now = time.monotonic()
+    return {
+        "loaded": _load_model.cache_info().currsize > 0,
+        "unavailable": now < _unavailable_until,
+        "reason": _unavailable_reason if now < _unavailable_until else "",
+    }
+
+
 def reset_unavailable_state() -> None:
     """Forget a remembered load failure (tests; or after fixing the network)."""
     global _unavailable_until, _unavailable_reason

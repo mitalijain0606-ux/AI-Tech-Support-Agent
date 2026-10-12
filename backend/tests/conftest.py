@@ -24,6 +24,20 @@ from operon_backend.config import settings
 
 
 @pytest.fixture(autouse=True)
+def _auth_off_by_default(monkeypatch):
+    """Most tests exercise the investigation itself, not authentication; they
+    run as the anonymous "public" principal. Authentication, tenant isolation
+    and rate limits have their own suites (test_auth.py, test_tenants.py,
+    test_rate_limit.py), which turn it on with the `auth_on` fixture."""
+    monkeypatch.setattr(settings, "auth_required", False)
+    from operon_backend.ratelimit import limiter
+
+    limiter.reset()
+    yield
+    limiter.reset()
+
+
+@pytest.fixture(autouse=True)
 def _offline_engine_by_default(monkeypatch):
     """Every test runs against the labelled offline engine unless it installs
     FakeGroq (tests/flow_helpers.py). No test can reach a real model."""

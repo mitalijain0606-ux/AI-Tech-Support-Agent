@@ -76,6 +76,7 @@ export interface EvidenceRequest {
   reason: string;
   requires_user_action: boolean;
   cycle: number;
+  question?: string | null;
 }
 
 // ---- Diagnosis + remediation ------------------------------------------------------
@@ -256,6 +257,7 @@ export interface SupportSession {
   phase_history: PhaseTransition[];
   attempted_actions: AttemptedAction[];
   activity: ActivityEntry[];
+  diagnostic_steps?: Array<{ request_id?: string; question?: string | null; answer?: string | null }>;
   action_attempt_count: number;
 }
 
@@ -291,12 +293,23 @@ export type ViewPhase =
   | "escalated"
   | "error";
 
+// One line of live progress shown while a step is running (from the backend's
+// event stream, GET /api/sessions/{id}/events). Progress, not truth: the
+// session returned when the step ends is what the extension acts on.
+export interface ProgressLine {
+  id: number;
+  text: string;
+}
+
 export interface ExtensionState {
   phase: ViewPhase;
   session?: SupportSession;
   diagnosis?: Diagnosis | null;
   policy?: PolicyDecision;
   message?: string;
+  progress?: ProgressLine[];
+  // Whether an access token is saved (never the token itself).
+  tokenSet?: boolean;
 }
 
 export type PopupCommand =
@@ -304,7 +317,9 @@ export type PopupCommand =
   | { type: "SEED_BUG" }
   | { type: "RESET" }
   | { type: "ASK_OPERON"; message: string }
+  | { type: "SET_TOKEN"; token: string }
   | { type: "INVESTIGATE_AGAIN" }
+  | { type: "ANSWER"; text: string }
   | { type: "APPROVE" }
   | { type: "DENY" };
 
@@ -333,12 +348,16 @@ export type ContentRequest =
   | { type: "CHECK_STORAGE"; keys?: string[] }
   | { type: "CLEAR_STORAGE_KEY"; key: string }
   | { type: "INSPECT_PAGE"; selector?: string | null }
-  | { type: "UNREGISTER_SERVICE_WORKER"; scope?: string | null };
+  | { type: "UNREGISTER_SERVICE_WORKER"; scope?: string | null }
+  | { type: "DISCOVER_APP_ACTIONS" }
+  | { type: "INVOKE_APP_ACTION"; action: string; params: Record<string, unknown> };
 
 export interface ContentResponse {
   storage?: StorageCheckResult[];
   page?: PageInspection;
   unregistered?: number;
   remaining_scopes?: string[];
+  app_actions?: string[];
+  app_result?: { ok: boolean; detail: string };
   error?: string;
 }

@@ -1,3 +1,5 @@
+import { discoverAppActions, invokeAppAction } from "./lib/appbridge";
+import { scrubParseError } from "./lib/sanitize";
 import type {
   ContentRequest,
   ContentResponse,
@@ -20,7 +22,8 @@ function inspectKey(key: string): StorageCheckResult {
     JSON.parse(raw);
     return { key, present: true, parse_status: "valid_json" };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown parse error";
+    // The parser's message can quote the stored text; keep only its shape.
+    const message = scrubParseError(err instanceof Error ? err.message : "Unknown parse error");
     const looksLikeJson = /^\s*[[{]/.test(raw);
     if (key === DEMO_STORAGE_KEY) {
       // This is real, observable evidence — a genuine SyntaxError logged to
@@ -115,6 +118,16 @@ chrome.runtime.onMessage.addListener(
           .then((page) => sendResponse({ page }))
           .catch((err) => sendResponse({ error: String(err) }));
         return true; // async response
+      case "DISCOVER_APP_ACTIONS":
+        discoverAppActions(window)
+          .then((app_actions) => sendResponse({ app_actions }))
+          .catch((err) => sendResponse({ error: String(err) }));
+        return true;
+      case "INVOKE_APP_ACTION":
+        invokeAppAction(window, request.action, request.params)
+          .then((app_result) => sendResponse({ app_result }))
+          .catch((err) => sendResponse({ error: String(err) }));
+        return true;
       case "UNREGISTER_SERVICE_WORKER":
         unregisterServiceWorker(request.scope)
           .then(sendResponse)

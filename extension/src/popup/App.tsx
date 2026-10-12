@@ -82,6 +82,8 @@ function StatusDot({ phase }: { phase: ViewPhase }) {
 export function App() {
   const [state, setState] = useState<ExtensionState>({ phase: "idle" });
   const [message, setMessage] = useState("");
+  const [token, setToken] = useState("");
+  const [answer, setAnswer] = useState("");
   const portRef = useRef<chrome.runtime.Port | null>(null);
 
   useEffect(() => {
@@ -101,6 +103,9 @@ export function App() {
   const pending = session?.pending_action ?? null;
   const currentHypothesis = session?.hypotheses.find((h) => h.hypothesis_id === session.current_hypothesis_id);
   const evidenceRequest = session?.evidence_request ?? null;
+  const answered = evidenceRequest?.question
+    ? Boolean(session?.diagnostic_steps?.find((st) => st.request_id === evidenceRequest.request_id)?.answer)
+    : false;
   const recentActivity = (session?.activity ?? []).slice(-8);
 
   return (
@@ -147,6 +152,31 @@ export function App() {
                 Ask Operon
               </Button>
             </div>
+            <details className="text-[11.5px] text-neutral-500">
+              <summary className="cursor-pointer select-none">
+                Backend access {state.tokenSet ? "· token saved" : "· no token"}
+              </summary>
+              <div className="mt-2 flex gap-2">
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  placeholder={state.tokenSet ? "Replace the saved token" : "Paste your access token"}
+                  aria-label="Backend access token"
+                  className="min-w-0 flex-1 rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1.5 font-mono text-[11px] outline-none focus:border-neutral-950"
+                />
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    send({ type: "SET_TOKEN", token: token.trim() });
+                    setToken("");
+                  }}
+                >
+                  {token.trim() || !state.tokenSet ? "Save" : "Remove"}
+                </Button>
+              </div>
+            </details>
           </div>
         )}
 
@@ -158,6 +188,15 @@ export function App() {
               <p className="max-w-[260px] text-[11.5px] text-neutral-400">
                 Watching this tab for a few seconds — if you can, reproduce the issue now.
               </p>
+            )}
+            {state.progress && state.progress.length > 0 && (
+              <ol aria-label="Live progress" className="max-w-[320px] space-y-0.5 text-left">
+                {state.progress.map((line) => (
+                  <li key={line.id} className="truncate font-mono text-[10.5px] leading-snug text-neutral-500">
+                    {line.text}
+                  </li>
+                ))}
+              </ol>
             )}
           </div>
         )}
@@ -183,6 +222,34 @@ export function App() {
                 </p>
               )}
             </div>
+            {evidenceRequest?.question && (
+              <div className="rounded-md border border-neutral-200 p-3">
+                <p className="text-[12px] font-medium text-neutral-900">{evidenceRequest.question}</p>
+                {answered ? (
+                  <p className="mt-1.5 text-[11.5px] text-neutral-500">Thanks — your answer will be used in the next step.</p>
+                ) : (
+                  <>
+                    <textarea
+                      aria-label="Your answer"
+                      className="mt-2 h-14 w-full resize-none rounded border border-neutral-300 p-2 text-[12px]"
+                      maxLength={1000}
+                      placeholder="Optional — never include passwords or tokens"
+                      value={answer}
+                      onChange={(e) => setAnswer(e.target.value)}
+                    />
+                    <Button
+                      variant="secondary"
+                      onClick={() => {
+                        send({ type: "ANSWER", text: answer });
+                        setAnswer("");
+                      }}
+                    >
+                      Send answer
+                    </Button>
+                  </>
+                )}
+              </div>
+            )}
             {evidenceRequest?.requires_user_action && (
               <p className="text-[11.5px] text-neutral-500">
                 Reproduce the problem in this tab, then continue — Operon will watch for a few seconds.

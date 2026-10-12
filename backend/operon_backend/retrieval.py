@@ -33,6 +33,56 @@ class KnowledgeIndexEmpty(RuntimeError):
     searched. Distinct from a search that ran and found nothing relevant."""
 
 
+# With pgvector, the database proposes this many nearest chunks and the exact
+# scoring (cosine, boosts, filters, floor) below still decides what is returned.
+PGVECTOR_CANDIDATES = 50
+
+_pgvector_cache: dict[str, bool] = {}
+
+
+def pgvector_available(db: DBSession) -> bool:
+    """True on PostgreSQL once migration 0002 has added knowledge_chunks.embedding_vec."""
+    bind = db.get_bind()
+    if bind.dialect.name != "postgresql":
+        return False
+    key = bind.url.render_as_string(hide_password=True)
+    if key not in _pgvector_cache:
+        from sqlalchemy import inspect
+
+        _pgvector_cache[key] = any(c["name"] == "embedding_vec" for c in inspect(bind).get_columns("knowledge_chunks"))
+    return _pgvector_cache[key]
+
+
+def _pgvector_candidates(db: DBSession, query_vec: list[float], tenant_id: str | None, source_types: list[str] | None) -> list[KnowledgeChunk]:
+    """Nearest chunks by cosine distance, using the HNSW index. Tenant isolation
+    is part of the SQL (another tenant's history can never be a candidate, or
+    crowd out the caller's own); the remaining filters run on the candidates."""
+    from sqlalchemy import text
+
+    rows = db.execute(
+        text(
+            """
+            SELECT id FROM knowledge_chunks
+            WHERE (CAST(:types AS text[]) IS NULL OR source_type = ANY(CAST(:types AS text[])))
+              AND (source_type <> :history
+                   OR chunk_metadata->>'tenant_id' = 'shared'
+                   OR chunk_metadata->>'tenant_id' = :tenant)
+            ORDER BY embedding_vec <=> CAST(:query AS vector)
+            LIMIT :k
+            """
+        ),
+        {
+            "types": source_types or None,
+            "history": HISTORY_SOURCE_TYPE,
+            "tenant": tenant_id,
+            "query": "[" + ",".join(repr(float(x)) for x in query_vec) + "]",
+            "k": PGVECTOR_CANDIDATES,
+        },
+    ).all()
+    ids = [r[0] for r in rows]
+    return db.query(KnowledgeChunk).filter(KnowledgeChunk.id.in_(ids)).all() if ids else []
+
+
 def knowledge_index_size(db: DBSession) -> int:
     """How many curated (non-history) chunks are indexed."""
     return db.query(KnowledgeChunk).filter(KnowledgeChunk.source_type != HISTORY_SOURCE_TYPE).count()
@@ -144,7 +194,10 @@ def search(
     if not history_only and knowledge_index_size(db) == 0:
         raise KnowledgeIndexEmpty("the knowledge base has not been indexed (0 curated chunks)")
     query_vec = embed(query_text)
-    chunks = db.query(KnowledgeChunk).all()
+    if pgvector_available(db):
+        chunks = _pgvector_candidates(db, query_vec, tenant_id, source_types)
+    else:
+        chunks = db.query(KnowledgeChunk).all()
     now_date = date.today()
 
     scored: list[RetrievedChunk] = []

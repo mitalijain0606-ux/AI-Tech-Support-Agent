@@ -55,15 +55,26 @@ def test_scenario_1_diagnosis_to_resolved():
     assert final["attempted_actions"][-1]["verified"] is True
 
 
-def test_scenario_5_policy_rejects_action_and_it_never_executes():
-    session = proposed(capabilities=["console_errors", "network_requests", "inspect_page"])  # no clear_storage_key
-    sid = session["session_id"]
-    p = policy(client, sid, provider_capabilities=["clear_storage_key"]).json()  # client claim is ignored
-    assert p["policy"]["decision"] == "DENY"
-    assert p["session"]["phase"] == "ESCALATED" and p["session"]["resolution_state"] == "escalated_policy_denied"
+def test_scenario_5_an_action_the_provider_cannot_perform_is_never_proposed():
+    # The provider declared no clear_storage_key: the diagnosis may not propose it
+    # (grounding), so the session ends without a plan and nothing can execute.
+    s = new_session(client, "dashboard broken", capabilities=["console_errors", "network_requests", "inspect_page"])
+    sid = s["session_id"]
+    body = submit(client, s, storage=[corrupt_storage()]).json()["session"]
+    assert body["phase"] == "ESCALATED" and body["resolution_state"] == "escalated_ungrounded_diagnosis"
+    assert body["pending_action"] is None
+    assert policy(client, sid).status_code == 409
     assert approve(client, sid).status_code == 409
     assert action_result(client, sid, "clear_storage_key").status_code == 409
     assert client.get(f"/api/sessions/{sid}").json()["attempted_actions"] == []
+
+
+def test_scenario_5b_policy_still_denies_an_unsupported_action_on_its_own():
+    # Defence in depth: even if a plan existed, the policy engine denies it.
+    from operon_backend.policy import evaluate
+
+    d = evaluate("clear_storage_key", {"key": "k"}, ["console_errors", "inspect_page"])
+    assert d.decision == "DENY"
 
 
 def test_policy_evaluates_the_pending_action_not_a_client_supplied_one():

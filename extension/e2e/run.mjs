@@ -88,6 +88,19 @@ const session = async () => backend.session((await extensionState(browser.sw)).s
 const coherent = (b) =>
   b.activity.every((a, i) => a.seq === i + 1) && b.phase_history.every((p, i) => i === 0 || p.from === b.phase_history[i - 1].to);
 
+// Authentication, as deployed: nothing works until the user saves an access token.
+await scenario("no access token: the extension explains what to do and nothing reaches the backend", "clean.html", async ({ popup }) => {
+  await popup.ask("my dashboard is blank");
+  await popup.waitPhase("Error", 20_000);
+  const shown = await popup.text();
+  check("the user is told to enter an access token", /access token/i.test(shown), shown.replace(/\s+/g, " ").slice(0, 140));
+  const raw = await fetch(`${backend.url}/api/sessions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ user_issue: "x" }) });
+  check("the backend itself answers 401 to an unauthenticated call", raw.status === 401);
+  const forged = await fetch(`${backend.url}/api/sessions`, { method: "POST", headers: { "content-type": "application/json", Authorization: "Bearer opk_forged" }, body: JSON.stringify({ user_issue: "x" }) });
+  check("a forged token gets the same 401", forged.status === 401 && (await forged.text()) === (await raw.text()));
+});
+await browser.setToken(backend.tokens.user);
+
 // 1-12: create → request → collect → investigate → retrieval → NEED_INFORMATION → plan → policy → approval → action → verification
 await scenario("full lifecycle: insufficient evidence, user reproduces, approved fix verified", "clean.html", async ({ target, popup }) => {
   await popup.ask("my dashboard is blank");
@@ -108,6 +121,14 @@ await scenario("full lifecycle: insufficient evidence, user reproduces, approved
   check("plan is grounded in collected evidence", plan.evidence_ids.length > 0 && plan.verification.cited_evidence.storage[0]?.key === "operon_demo_cache");
   check("policy requires approval for a destructive action", st.session.policy_decision?.decision === "REQUIRE_APPROVAL");
   check("nothing executed before approval", (await target.evaluate(() => localStorage.getItem("operon_demo_cache"))) !== null);
+  // Approval is authorized on the server, not by the popup.
+  const foreign = await backend.api("GET", `/api/sessions/${sid}`, undefined, backend.tokens.other);
+  check("a user of another tenant cannot even see the session (404)", foreign.status === 404);
+  const hijack = await backend.api("POST", `/api/sessions/${sid}/approve`, { approved: true, proposal_id: plan.proposal_id }, backend.tokens.teammate);
+  check("a teammate cannot approve someone else's action (404)", hijack.status === 404);
+  const stale = await backend.api("POST", `/api/sessions/${sid}/approve`, { approved: true, proposal_id: "prop_stale" });
+  check("an approval naming a different plan is refused (409)", stale.status === 409);
+  check("none of that changed the session or the page", (await backend.session(sid)).phase === "WAITING_FOR_APPROVAL" && (await target.evaluate(() => localStorage.getItem("operon_demo_cache"))) !== null);
 
   await popup.click("Approve");
   await popup.waitPhase("Resolved");
@@ -121,6 +142,12 @@ await scenario("full lifecycle: insufficient evidence, user reproduces, approved
   }
   check("diagnosis labelled with its engine", b.diagnoses.every((d) => d.engine === "rule_based"));
   check("activity and phase history are coherent", coherent(b), b.phase_history.map((p) => p.to).join(" → "));
+  const stream = await (await fetch(`${backend.url}/api/sessions/${sid}/events`, { headers: backend.headers() })).text();
+  const strangers = await fetch(`${backend.url}/api/sessions/${sid}/events`, { headers: backend.headers(backend.tokens.other) });
+  check("the event stream is tenant-scoped too (404 for another tenant)", strangers.status === 404);
+  const streamed = stream.split("\n\n").filter((f) => f.includes("data: ")).map((f) => JSON.parse(f.split("data: ")[1]));
+  const stages = streamed.filter((e) => e.type === "stage").map((e) => `${e.stage}:${e.status}`);
+  check("the live event stream replays every pipeline stage and ends with the session", ["investigate:started", "investigate:finished", "classify:finished", "diagnose:started", "diagnose:finished", "plan:finished", "verify:finished"].every((x) => stages.includes(x)) && streamed.at(-1).type === "end", `${stages.length} stage events`);
 });
 
 // 13-14, 20: verification false positive protection, retry, escalation
@@ -230,8 +257,9 @@ await scenario("unsupported action and client-declared success are rejected", "c
   await popup.waitPhase("Awaiting approval");
   const sid = (await extensionState(browser.sw)).session.session_id;
   const res = await browser.sw.evaluate(async ({ api, sid }) => {
+    const { operon_token: token } = await chrome.storage.local.get("operon_token");
     const post = async (path, body) => {
-      const r = await fetch(`${api}/api/sessions/${sid}/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const r = await fetch(`${api}/api/sessions/${sid}/${path}`, { method: "POST", headers: { "content-type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
       return r.status;
     };
     return {

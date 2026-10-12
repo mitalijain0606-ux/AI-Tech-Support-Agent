@@ -1,0 +1,9 @@
+# Test / lint tooling on top of the runtime lock. Regenerate requirements-dev.txt with:
+#   uv pip compile requirements-dev.in --python-version 3.11 --generate-hashes -o requirements-dev.txt
+-c requirements.txt
+pytest>=8
+pytest-asyncio>=0.23
+ruff>=0.5
+pip-audit>=2.7
+fakeredis>=2.23
+pgserver>=0.1.4

@@ -1,6 +1,6 @@
 # Browser end-to-end tests
 
-Two suites drive the **actual built extension** in Chromium against the **real
+These suites drive the **actual built extension** in Chromium against the **real
 backend process**. Unit tests (`extension/tests`, `backend/tests`) cover the
 pieces; these cover the pieces wired together: build-time backend URL,
 manifest, service worker, content script, popup, the HTTP contract, and
@@ -10,11 +10,16 @@ browser timing.
 |---|---|---|---|
 | Deterministic | `npm run e2e` | local fixture pages (`e2e/fixtures`) via the `e2e-local` build | none (localhost only) |
 | Live github.com | `npm run e2e:github` | one public github.com page via the real `github` build | outbound HTTPS to github.com |
+| GitHub demo | `npm run e2e:demo` | the seeded-bug approve / deny flow on a real github.com page (`OPERON_E2E_GROQ=1` for the real model) | outbound HTTPS to github.com |
+| Wire (extension) | `npm run e2e:wire` | a recording proxy between the extension and the backend: fake secrets typed into the popup must be absent from every byte sent | none |
+| SDK in Buggy Cloud | `npm run e2e:sdk` | plain Chromium (no extension) + Buggy Cloud with the SDK panel + the real backend: all seven bugs, reject, approve, replay, failure paths, control | none |
+| Wire (SDK) | `npm run e2e:sdk-wire` | the same recording proxy in front of the backend for the SDK: fake secrets planted in console, URLs, storage, title, description | none |
+| Second app | `npm run e2e:buggy` | `buggy-cloud/` served locally: seven seeded bugs + a healthy control, via the `e2e-local` build | none (localhost only) |
 
-Both suites start their own backend (`uvicorn`, a throwaway SQLite database,
+All suites start their own backend (`uvicorn`, a throwaway SQLite database,
 `GROQ_API_KEY` forced empty so diagnoses come from the labelled offline
-engine), build the extension pointed at it, and clean up afterwards. Neither
-needs credentials, and neither uses a signed-in browser profile. Nothing is
+engine), build the extension (where one is used) pointed at it, and clean up afterwards. None
+needs credentials, and none uses a signed-in browser profile. Nothing is
 seeded around the application: the backend's own startup indexes the
 knowledge base into the fresh database, exactly as in a real deployment.
 

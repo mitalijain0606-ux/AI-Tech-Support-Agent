@@ -30,6 +30,7 @@ const extPath = buildExtension("github", backend.url);
 const proxy = process.env.HTTPS_PROXY || process.env.https_proxy;
 const browser = await launchWithExtension(extPath, { args: proxy ? [`--proxy-server=${proxy}`] : [] });
 const { ctx, extId } = browser;
+await browser.setToken(backend.tokens.user);
 console.log(`backend ${backend.url} · extension ${extId} · page ${PAGE}`);
 
 let blocked = null;

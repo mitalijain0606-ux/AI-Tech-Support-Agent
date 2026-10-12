@@ -29,11 +29,27 @@ Two folders, two different jobs — don't mix content between them.
 5. [`knowledge-base/`](knowledge-base/README.md) — source-verified GitHub
    knowledge base and engineering spec for an API-based GitHub agent
    (a second provider on the same agent spine). Foundation release.
-6. [`plan/02-phase-2-fake-saas.md`](plan/02-phase-2-fake-saas.md) — next,
-   blocked on the above.
+6. [`plan/02-phase-2-fake-saas.md`](plan/02-phase-2-fake-saas.md) — the
+   second app; built in reduced form as `buggy-cloud/`, not deployed.
 7. [`plan/03-roadmap.md`](plan/03-roadmap.md) — real future work, not active.
 8. `archive/` — only when you want the original reasoning behind something
    in the roadmap.
+
+## Running it locally
+
+- [`LOCAL_DEVELOPMENT.md`](LOCAL_DEVELOPMENT.md) — one command (`node scripts/dev-local.mjs`) starts the backend and
+  Buggy Cloud; how to load the extension in Chrome; ports, health checks, troubleshooting.
+
+## Current state, deployment and security
+
+- [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md) — what is done,
+  partial, not started and blocked, what was verified, what was not, the
+  review findings and the progress log. Start here.
+- [`DEPLOYMENT.md`](DEPLOYMENT.md) — Render + Neon (+ Redis, Groq): every
+  manual step, environment variables, known limits. Nothing is deployed.
+- [`DEMO_REHEARSAL.md`](DEMO_REHEARSAL.md) — the pre-demo checklist.
+- [`SDK_VS_EXTENSION.md`](SDK_VS_EXTENSION.md) — how app-specific fixes work
+  and why a page cannot widen what Operon may do.
 
 ## Testing and validation status
 

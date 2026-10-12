@@ -2,7 +2,7 @@
 // fixture site, the actual built extension loaded into Chromium, and a small
 // PASS/FAIL recorder. Nothing here needs credentials.
 import { spawn, execFileSync } from "node:child_process";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -65,19 +65,41 @@ async function waitFor(fn, label, timeoutMs = 60_000) {
 
 /**
  * Starts the real FastAPI backend (uvicorn) on a free port with a throwaway
- * SQLite database. GROQ_API_KEY is forced empty so the labelled offline
- * engine diagnoses: the suite is deterministic and needs no credentials.
+ * SQLite database. GROQ_API_KEY is forced empty (unless `groq` is set) so the
+ * labelled offline engine diagnoses: the suite is deterministic and needs no
+ * credentials. `env` adds/overrides backend environment variables.
  * Nothing is seeded around the application: the backend's own startup
  * indexes the knowledge base into the fresh database (see kbChunks()).
  */
-export async function startBackend({ python = process.env.OPERON_E2E_PYTHON || "python3" } = {}) {
+export async function startBackend({ python = process.env.OPERON_E2E_PYTHON || "python3", groq = false, auth = true, env: extraEnv = {} } = {}) {
   const port = await freePort();
   const dir = mkdtempSync(path.join(os.tmpdir(), "operon-e2e-db-"));
   const dbPath = path.join(dir, "e2e.db");
   const logs = [];
+  // Authentication is ON by default, as deployed: the suites run with real API
+  // keys minted by the key CLI (a user, a second user of the same tenant, and a
+  // user of another tenant), so the whole stack is exercised authenticated.
+  const mint = (tenant, subject, role = "user") => {
+    const out = execFileSync(python, ["scripts/manage_keys.py", "create", "--tenant", tenant, "--subject", subject, "--role", role], {
+      cwd: path.join(REPO_ROOT, "backend"),
+      env: { ...process.env, DATABASE_URL: `sqlite:///${dbPath}` },
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out.split("\n").find((l) => l.startsWith("token")).split(":")[1].trim();
+  };
+  const tokens = auth ? { user: mint("e2e", "e2e-user"), teammate: mint("e2e", "e2e-teammate"), other: mint("other-co", "mallory") } : {};
   const proc = spawn(python, ["-m", "uvicorn", "operon_backend.main:app", "--host", "127.0.0.1", "--port", String(port)], {
     cwd: path.join(REPO_ROOT, "backend"),
-    env: { ...process.env, DATABASE_URL: `sqlite:///${dbPath}`, GROQ_API_KEY: "" },
+    env: {
+      ...process.env,
+      DATABASE_URL: `sqlite:///${dbPath}`,
+      // groq: use the real model. A key already in the environment is used as is;
+      // otherwise a non-secret placeholder (an egress proxy may inject the real key).
+      GROQ_API_KEY: groq ? process.env.GROQ_API_KEY || "proxy-injected" : "",
+      AUTH_REQUIRED: auth ? "true" : "false",
+      ...extraEnv,
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   proc.stdout.on("data", (d) => logs.push(String(d)));
@@ -95,15 +117,22 @@ export async function startBackend({ python = process.env.OPERON_E2E_PYTHON || "
     url,
     dbPath,
     logs,
-    api: async (method, p, body) => {
-      const res = await fetch(`${url}${p}`, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+    tokens,
+    /** Headers for a call as `token` (default: the suite's user). */
+    headers: (token = tokens.user) => (token ? { Authorization: `Bearer ${token}` } : {}),
+    api: async (method, p, body, token = tokens.user) => {
+      const res = await fetch(`${url}${p}`, {
+        method,
+        headers: { "content-type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
       let json = null;
       try {
         json = await res.json();
       } catch {}
       return { status: res.status, body: json };
     },
-    session: async (id) => (await fetch(`${url}/api/sessions/${id}`)).json(),
+    session: async (id, token = tokens.user) => (await fetch(`${url}/api/sessions/${id}`, { headers: token ? { Authorization: `Bearer ${token}` } : {} })).json(),
     dbBytes: () => (existsSync(dbPath) ? readFileSync(dbPath).toString("latin1") : ""),
     /** Knowledge chunks in the database by source type (e.g. { kb: 3, error: 17 }). */
     kbChunks: () =>
@@ -131,6 +160,33 @@ import json, sqlite3, sys
 row = sqlite3.connect(sys.argv[1]).execute("select collected_evidence from sessions where id = ?", (sys.argv[2],)).fetchone()
 print(json.dumps([r.get("bundle", r) for r in json.loads(row[0] or "[]")] if row else []))
 `;
+
+/**
+ * A transparent recording proxy in front of `targetUrl`: forwards every request unchanged and keeps
+ * the method, path and the exact body bytes. Putting it between a client and the backend shows what
+ * the client REALLY sends, independent of anything the backend later redacts. Test infrastructure only.
+ */
+export async function startRecordingProxy(targetUrl) {
+  const target = new URL(targetUrl);
+  const recorded = [];
+  const server = createServer((req, res) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const body = Buffer.concat(chunks);
+      recorded.push({ method: req.method, path: req.url, body: body.toString("utf-8"), headers: req.headers });
+      const up = httpRequest({ host: target.hostname, port: target.port, path: req.url, method: req.method, headers: req.headers }, (r) => {
+        res.writeHead(r.statusCode, r.headers);
+        r.pipe(res);
+      });
+      up.on("error", () => res.writeHead(502).end());
+      up.end(body);
+    });
+  });
+  const port = await freePort();
+  await new Promise((r) => server.listen(port, "127.0.0.1", r));
+  return { url: `http://127.0.0.1:${port}`, recorded, stop: () => server.close() };
+}
 
 /** Serves e2e/fixtures on 127.0.0.1 (the e2e-local target's match). */
 export async function startFixtureSite() {
@@ -206,6 +262,18 @@ export async function launchWithExtension(extPath, { args = [] } = {}) {
     browserErrors,
     get sw() {
       return current;
+    },
+    /** Saves the access token the way a user does: through the popup. */
+    async setToken(token) {
+      const page = await ctx.newPage();
+      await page.goto(`chrome-extension://${extId}/popup/popup.html`);
+      await page.evaluate((t) => {
+        const port = chrome.runtime.connect();
+        port.postMessage({ type: "RESET" }); // back to the start screen, where the token field lives
+        port.postMessage({ type: "SET_TOKEN", token: t });
+      }, token);
+      await page.locator("summary", { hasText: token ? "token saved" : "no token" }).waitFor({ timeout: 10_000 });
+      await page.close();
     },
     close: async () => {
       await ctx.close();

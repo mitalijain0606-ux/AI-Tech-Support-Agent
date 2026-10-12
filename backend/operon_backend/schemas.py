@@ -139,6 +139,10 @@ class EvidenceRequest(BaseModel):
     reason: str
     requires_user_action: bool = False  # e.g. "reproduce the problem now"
     cycle: int = 0
+    # An optional free-text question for the user, shown with the request. The
+    # answer (POST /api/sessions/{id}/answer) is context for the next diagnosis;
+    # the evidence collection never waits on it.
+    question: str | None = Field(default=None, max_length=300)
 
 
 class InformationRequest(BaseModel):
@@ -148,6 +152,7 @@ class InformationRequest(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
     reason: str
     requires_user_action: bool = False
+    question: str | None = None  # validated by signals.question_problems before use
 
 
 # ---- Diagnosis + remediation ----------------------------------------------------
@@ -287,8 +292,17 @@ class SessionPolicyRequest(BaseModel):
     provider_capabilities: list[str] | None = None
 
 
+class AnswerRequest(BaseModel):
+    """The user's reply to the question attached to the outstanding evidence request."""
+    request_id: str = Field(max_length=64)
+    answer: str = Field(min_length=1, max_length=1000)
+
+
 class ApprovalRequest(BaseModel):
     approved: bool
+    # The plan this decision is about. Optional for older clients; when given,
+    # a decision on a plan that has since been replaced is rejected (409).
+    proposal_id: str | None = Field(default=None, max_length=64)
 
 
 class ActionResultRequest(BaseModel):
@@ -308,6 +322,10 @@ class SessionOut(BaseModel):
     session_id: str
     phase: str
     user_issue: str
+    # Which integration created the session ("extension", "sdk", ...) and what that provider
+    # declared it can do. Informational: policy is evaluated against the stored capabilities.
+    source: str | None = None
+    provider_capabilities: list[str] = Field(default_factory=list)
     issue_category: str | None = None
     hypotheses: list[dict[str, Any]] = Field(default_factory=list)
     current_hypothesis_id: str | None = None

@@ -66,7 +66,7 @@ for the literal file tree — this doc doesn't repeat it.
 | | Original plan | Current plan |
 |---|---|---|
 | LLM | Gemini | **Groq** |
-| Providers | SDK + Extension + Playwright | **Extension only**, for now |
+| Providers | SDK + Extension + Playwright | **Extension**, plus a minimal one-file SDK for app-specific actions; no Playwright |
 | Persistence | Postgres + Redis from Week 1 | Postgres + Redis — see [`production-architecture.md`](production-architecture.md); the stateless MVP in Phase 1 was a deliberate, temporary simplification, not a rejection of this |
 | RAG | Explicitly cut for scope | **Back in** — see [`production-architecture.md`](production-architecture.md) |
 | Pipeline | 5 separate LLM calls | Growing to 5 (6 counting Retrieve) — see [`production-architecture.md`](production-architecture.md); Phase 1 used 1 combined call as a starting point |
@@ -88,5 +88,8 @@ graduated from "deferred" to "designed."
 - **[Production architecture](production-architecture.md)** (active):
   persistence, RAG, and the real five-stage pipeline, built on top of
   Phase 1's working loop rather than replacing it.
-- **[Phase 2](02-phase-2-fake-saas.md)** (blocked on the above): a small
-  fake SaaS app we control, proving the same core generalizes.
+- **[Phase 2](02-phase-2-fake-saas.md)** (built in reduced form as
+  `buggy-cloud/`, tested locally, not deployed): a small app we control,
+  proving the same core generalizes.
+- Current status, evidence and remaining work:
+  [`../IMPLEMENTATION_STATUS.md`](../IMPLEMENTATION_STATUS.md).

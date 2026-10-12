@@ -13,10 +13,10 @@ fix worked. The extension collects, executes and reports.
 
 ## Phasing
 
-- **Phase 1 (current):** backend plus the `github` target, end to end against
-  real github.com.
-- **Phase 2 (later):** a small fake SaaS app and its own `fake-saas` target,
-  showing the same core works on a product we control.
+- **Phase 1:** backend plus the `github` target, end to end against real github.com.
+- **Phase 2 (built as `buggy-cloud/`):** a small app we control, with seven seeded
+  bugs and an SDK-provided fix, showing the same core works on a second product.
+  It is tested through the `e2e-local` build; `targets/fake-saas.json` is still unset.
 
 ## Folder structure
 
@@ -30,9 +30,17 @@ operon/
 │   ├── pyproject.toml            package metadata, ruff + pytest config (markers: live_embeddings, live_groq)
 │   ├── requirements.txt
 │   ├── .env.example              GROQ_API_KEY, GROQ_MODEL — documented, never committed with values
-│   ├── vercel.json, api/index.py legacy serverless entry point (not deployed in this milestone)
+│   ├── requirements.in, requirements-dev.in   inputs; requirements*.txt are hash-locked (uv)
+│   ├── alembic.ini, migrations/  baseline schema + pgvector (Postgres-only) revisions
+│   ├── eval.py, eval_data/       measured evaluation against ground-truth fixtures
 │   ├── operon_backend/
-│   │   ├── main.py               HTTP API: /api/sessions/*, legacy /api/diagnose + /api/policy, /health
+│   │   ├── main.py               HTTP API: /api/sessions/* (incl. /answer, /events), legacy /api/diagnose + /api/policy, /health, /ready
+│   │   ├── auth.py               API keys, tenants, roles; 404-not-403 isolation; client_ip
+│   │   ├── ratelimit.py          per-caller limits (memory / Redis, fail-open)
+│   │   ├── events.py             EventBus / RedisEventBus, SSE stream
+│   │   ├── logging_config.py     JSON logs, request ids, generic 500s (pure ASGI)
+│   │   ├── signals.py            pattern helpers: injection, CORS, HTTP/fetch failures, preferences, question safety
+│   │   ├── stages.py             PIPELINE_STAGES, deterministic classify, stage() reporting
 │   │   ├── config.py             typed settings from env / .env
 │   │   ├── schemas.py            evidence, requests, plans, observations — bounded, verify requests forbid extra fields
 │   │   ├── db.py, db_models.py   SQLAlchemy; SessionRecord (the SupportSession), KnowledgeChunk
@@ -51,6 +59,8 @@ operon/
 │   │   ├── knowledge.py          KB ingestion, ensure_knowledge_base (startup); resolved-session history (redacted)
 │   │   └── activity.py           append-only, redacted activity log
 │   ├── scripts/
+│   │   ├── manage_keys.py        create / list / revoke API keys
+│   │   ├── warm_model.py         download the embedding model at build time
 │   │   ├── seed_kb.py            refresh the KB index (startup indexes an empty database itself)
 │   │   └── validate_services.py  real Groq + real embeddings report: PASS / FAIL / BLOCKED
 │   └── tests/                    offline suite (pytest)
@@ -68,9 +78,12 @@ operon/
 │   │   │                         approved-action execution, observation, resync after restart
 │   │   ├── content.ts            storage shape (never values), page inspection, SW unregister
 │   │   ├── lib/types.ts          wire types shared with the backend contract
-│   │   ├── lib/sanitize.ts       client-side credential redaction (mirrors the backend tripwire)
+│   │   ├── lib/sanitize.ts       re-exports sdk/redact.js (one redaction implementation for SDK and extension)
+│   │   ├── lib/progress.ts       backend progress events → popup lines
+│   │   ├── lib/appbridge.ts      discover / invoke the page's Operon SDK actions over postMessage
 │   │   └── popup/                React popup (App.tsx)
 │   ├── targets/
+│   │   ├── local-demo.json       local demo against Buggy Cloud (http://127.0.0.1/*) — never ship
 │   │   ├── github.json           Phase 1 — https://github.com/*
 │   │   ├── e2e-local.json        local E2E fixtures only (http://127.0.0.1/*) — never shipped
 │   │   └── fake-saas.json        Phase 2 — not configured, refuses to build
@@ -79,11 +92,26 @@ operon/
 │   ├── e2e/                      browser E2E (see e2e/README.md)
 │   │   ├── run.mjs               deterministic: built extension + real backend + Chromium + fixtures
 │   │   ├── github-live.mjs       live, read-only check on a public github.com page
+│   │   ├── github-demo.mjs       live approve / deny demo on github.com
+│   │   ├── buggy-cloud.mjs       second app: 7 seeded bugs + healthy control
+│   │   ├── free-text-wire.mjs    records the extension's real network bytes; fake secrets must be absent
+│   │   ├── buggy-cloud-sdk.mjs   Buggy Cloud through the SDK (no extension): approve / reject / failures
+│   │   ├── sdk-wire.mjs          recording proxy in front of the backend: SDK request bytes
 │   │   ├── lib/harness.mjs       backend/fixture/browser plumbing
 │   │   └── fixtures/             local pages with deliberate, harmless defects
 │   └── dist/                     build output, gitignored
 │
+├── sdk/                          the Operon SDK (not published): operon-sdk.js (client + extension carrier),
+│                                 redact.js (redaction, shared with the extension), *.d.ts, scripts/build.mjs
+│                                 (classic-script build), tests/ (node:test), README.md
+├── buggy-cloud/                  the second application (see its README)
+├── scripts/dev-local.mjs         one command: local backend + Buggy Cloud + builds + self-check
+├── render.yaml                   Render blueprint — written, never deployed
+├── .github/workflows/ci.yml      CI — written, never run on GitHub
+│
 └── docs/
+    ├── IMPLEMENTATION_STATUS.md  what is done / verified / left; progress log
+    ├── DEPLOYMENT.md, DEMO_REHEARSAL.md, SDK_VS_EXTENSION.md
     ├── TESTING.md                test suites, real-service validation, status, limitations
     ├── plan/                     phased plan, production architecture, scenarios
     ├── knowledge-base/           troubleshooting KB (ingested by knowledge.py) + kb_lint.py
@@ -92,9 +120,8 @@ operon/
 
 ## What's intentionally not here yet
 
-- No deployment configuration for this milestone. SQLite is the default
-  database. Postgres/Redis are a `DATABASE_URL` change plus later work.
-- No `packages/operon-core` shared package: there's only one consumer.
-- No `providers/` or SDK provider: the extension is the only capability
-  provider.
-- No `fake-saas-app/`: Phase 2 starts after Phase 1.
+- No deployment has been made: `render.yaml` and the CI workflow are untested
+  on their platforms (see `docs/DEPLOYMENT.md`).
+- No `packages/operon-core` shared package: the SDK is one file and the
+  extension reuses its own sanitizer/types.
+- No GitHub API agent: a separate future product.

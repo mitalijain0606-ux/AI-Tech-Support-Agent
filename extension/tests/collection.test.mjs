@@ -130,6 +130,7 @@ test("NEED_INFORMATION without user action is collected automatically — but bo
     content: contentFor(),
     backend: (method, path) => {
       if (path === "/api/sessions") return session("UNDERSTANDING", { evidence_request: evidenceRequest({ collectors: ["page"] }) });
+      if (!path.endsWith("/investigate")) return { status: 404, body: {} }; // e.g. the optional progress stream
       investigations++;
       return { diagnosis: null, session: session("NEED_INFORMATION", { evidence_request: evidenceRequest({ request_id: `req_${investigations + 1}`, purpose: "information", collectors: ["page"], reason: "look again" }) }) };
     },
@@ -185,5 +186,24 @@ test("a secret near the truncation point is redacted before the URL is cut", asy
   const url = `https://github.com/x?${"q".repeat(980)}&access_token=${token}`;
   const { bundle } = await collect(evidenceRequest({ collectors: ["page"] }), { tabs: [{ id: 5, url }] });
   assert.ok(!bundle.url.includes(token.slice(0, 12)), bundle.url.slice(-60));
+  assert.ok(bundle.redaction_applied.length > 0);
+});
+
+test("console lines written by the page are redacted for keys in formats no fixed rule knows", async () => {
+  const j = (...p) => p.join("");
+  const KEY = "Zq9Xk2LmN8vB4cR7tY1wE5uI3oP6aS0d";
+  const VENDOR = j("sk_li", "ve_", "4eC39HqLyjWDarjtT1zdp7dc");
+  const { bundle } = await collect(evidenceRequest({ collectors: ["console", "storage"] }), {
+    content: (msg, w) => {
+      if (msg.type !== "CHECK_STORAGE") return {};
+      w.consoleError(`auth failed key=${KEY} vendor ${VENDOR}; my password is hunter2x9 (retry in 5s)`);
+      w.consoleError("TypeError: Cannot read properties of undefined (reading 'map') at renderProjectListItems");
+      return { storage: [STORAGE_ROW] };
+    },
+  });
+  const wire = JSON.stringify(bundle);
+  for (const secret of [KEY, VENDOR, "hunter2x9"]) assert.ok(!wire.includes(secret), `${secret.slice(0, 8)} leaked`);
+  assert.match(bundle.console[0].text, /auth failed/);
+  assert.equal(bundle.console[1].text, "TypeError: Cannot read properties of undefined (reading 'map') at renderProjectListItems", "ordinary errors are untouched");
   assert.ok(bundle.redaction_applied.length > 0);
 });

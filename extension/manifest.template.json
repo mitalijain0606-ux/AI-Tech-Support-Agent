@@ -16,6 +16,6 @@
     "default_popup": "popup/popup.html",
     "default_title": "Operon"
   },
-  "permissions": ["debugger", "storage", "cookies", "activeTab", "scripting"],
-  "host_permissions": ["__TARGET_MATCH__"]
+  "permissions": ["debugger", "storage", "cookies"],
+  "host_permissions": ["__TARGET_MATCH__", "__BACKEND_MATCH__"]
 }

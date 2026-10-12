@@ -45,6 +45,11 @@ def build_proposal(
             service_worker_scope=scope,
             storage_keys=[s.key for s in cited.storage],
         )
+    elif action.action_id == "reset_user_preference":
+        preference = params.get("preference")
+        target = {"preference": preference}
+        expected = f"the app no longer reports an invalid {preference} when the page is reloaded and observed"
+        verification = VerificationPlan(strategy="reobserve_cited", cited_evidence=cited, storage_keys=[s.key for s in cited.storage])
     else:  # reload, inspect_page
         target = {"page": window.page[-1].url_path if window.page else window.url}
         if action.action_id == "inspect_page":

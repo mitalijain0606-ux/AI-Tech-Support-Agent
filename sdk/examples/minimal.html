@@ -1,0 +1,97 @@
+<!doctype html>
+<!--
+  Smallest working use of the Operon SDK as a classic script (no module, no bundler).
+
+  Run it against the local project (see docs/LOCAL_DEVELOPMENT.md):
+    1. cd sdk && node scripts/build.mjs               # writes dist/operon-sdk.iife.min.js
+    2. node scripts/dev-local.mjs                      # backend + Buggy Cloud (serves this file)
+    3. open  http://127.0.0.1:4300/sdk/examples/minimal.html
+
+  The page has one tiny "app": a saved timezone preference. The preference is deliberately invalid, so
+  formatting a date throws a real RangeError, which the SDK captures as evidence. The only fix this page
+  offers is `reset_user_preference`, and only after you approve it.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Operon SDK — minimal example</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; max-width: 560px; margin: 2rem auto; padding: 0 1rem; }
+    #date.broken { color: #b00020; }
+    button { margin-right: .5rem; }
+    pre { background: #f4f4f4; padding: .5rem; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Minimal Operon example</h1>
+  <p>Today is: <strong id="date">…</strong></p>
+  <button id="diagnose">Diagnose</button>
+  <button id="approve" hidden>Approve fix</button>
+  <button id="reject" hidden>Reject</button>
+  <pre id="log" aria-live="polite">Ready.</pre>
+
+  <script src="/sdk/dist/operon-sdk.iife.min.js"></script>
+  <script>
+    const PREFS = "example_prefs";
+    const $ = (id) => document.getElementById(id);
+    const log = (text) => { $("log").textContent = text; };   // textContent only: backend text is untrusted
+
+    // The app's own code: shows the date in the saved timezone. An invalid zone throws a real RangeError.
+    function render() {
+      const prefs = JSON.parse(localStorage.getItem(PREFS) || '{"timezone":"UTC"}');
+      try {
+        $("date").textContent = new Intl.DateTimeFormat("en-US", { timeZone: prefs.timezone, dateStyle: "long" }).format(new Date());
+        $("date").className = "";
+      } catch (err) {
+        $("date").textContent = "(cannot show the date)";
+        $("date").className = "broken";
+        console.error(`Could not format values for display: ${err.name}: ${err.message}`);
+      }
+    }
+
+    let operon;
+    async function start() {
+      const config = await (await fetch("/operon-config.json")).json();   // local testing only: a ready-made token
+      operon = Operon.init({
+        backendUrl: config.backendUrl,
+        token: config.token,
+        appId: "minimal-example",
+        storageKeys: [PREFS],
+        capture: { console: true },
+        actions: {
+          reset_user_preference({ preference }) {
+            localStorage.setItem(PREFS, JSON.stringify({ ...JSON.parse(localStorage.getItem(PREFS) || "{}"), [preference]: "UTC" }));
+            render();
+            return { detail: `reset ${preference}` };
+          },
+        },
+        reobserve: render,        // lets Operon re-run the failing path to verify a fix
+      });
+      operon.on("progress", (p) => log(`Working: ${p.stage} (${p.status})`));
+      if (!localStorage.getItem(PREFS)) localStorage.setItem(PREFS, JSON.stringify({ timezone: "Mars/Phobos" }));  // the seeded bug
+      render();
+    }
+
+    $("diagnose").onclick = async () => {
+      try {
+        const r = await operon.diagnose("The date on this page is missing.");
+        if (r.state === "proposal") {
+          log(`Operon proposes: ${r.proposal.action_id} ${JSON.stringify(r.proposal.parameters)}\n${r.proposal.diagnosis}`);
+          $("approve").hidden = $("reject").hidden = false;
+        } else log(`Operon says: ${r.state}`);
+      } catch (e) { log(`Operon error: ${e.code}`); }
+    };
+    const decide = (yes) => async () => {
+      try {
+        const d = await operon.decide(yes);
+        $("approve").hidden = $("reject").hidden = true;
+        log(yes ? `Executed: ${d.executed}. Backend verification: ${d.verification ? d.verification.outcome : "none"}.` : "Rejected. Nothing was changed.");
+      } catch (e) { log(`Operon error: ${e.code}`); }
+    };
+    $("approve").onclick = decide(true);
+    $("reject").onclick = decide(false);
+    start();
+  </script>
+</body>
+</html>

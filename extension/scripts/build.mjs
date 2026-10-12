@@ -46,7 +46,8 @@ if (backendUrl.startsWith("http:") && !/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)
   console.warn(`Warning: backend URL ${backendUrl} is plain http — use https for anything but local development.`);
 }
 
-const outDir = path.join(root, "dist", target);
+// OPERON_BUILD_OUT (used by tests) writes elsewhere, so a test build never overwrites the dist/<target> you loaded in Chrome.
+const outDir = process.env.OPERON_BUILD_OUT ? path.resolve(process.env.OPERON_BUILD_OUT) : path.join(root, "dist", target);
 mkdirSync(path.join(outDir, "popup"), { recursive: true });
 
 await build({
@@ -80,6 +81,13 @@ execFileSync(
 cpSync(path.join(root, "src/popup/popup.html"), path.join(outDir, "popup/popup.html"));
 
 const manifestTemplate = readFileSync(path.join(root, "manifest.template.json"), "utf-8");
-writeFileSync(path.join(outDir, "manifest.json"), manifestTemplate.replaceAll("__TARGET_MATCH__", targetConfig.match));
+// The extension may call exactly one other origin: its own backend. Listing it in
+// host_permissions is what lets the service worker reach it without the
+// backend enabling CORS for the whole web.
+const backendMatch = `${new URL(backendUrl).origin}/*`;
+writeFileSync(
+  path.join(outDir, "manifest.json"),
+  manifestTemplate.replaceAll("__TARGET_MATCH__", targetConfig.match).replaceAll("__BACKEND_MATCH__", backendMatch),
+);
 
-console.log(`Built extension/dist/${target}/ for ${targetConfig.domain} (backend: ${backendUrl})`);
+console.log(`Built ${path.relative(root, outDir) || outDir}/ for ${targetConfig.domain} (backend: ${backendUrl})`);

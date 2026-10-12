@@ -12,5 +12,9 @@ node_modules/
 # Extension build output
 extension/dist/
 
-# Vercel
-.vercel/
+
+# SDK build output
+sdk/dist/
+
+# Local development state (database, keys, pids) — never commit
+.local/

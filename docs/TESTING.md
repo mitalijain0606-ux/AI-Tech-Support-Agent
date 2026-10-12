@@ -1,5 +1,11 @@
 # Testing and real-service validation
 
+> **Newer results** (auth, Postgres/Redis, SSE, staged pipeline, questions, the
+> evaluation, Buggy Cloud) are in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md);
+> the section "Autonomous-execution milestone" below summarises how to run them.
+> The "Validation results" and "Known limitations" sections further down describe
+> the earlier validation milestone and are kept as history where marked.
+
 This page says what each test suite exercises, what is stubbed and what is
 real, and what was actually validated against real services in the
 validation milestone. Status words mean:
@@ -175,3 +181,22 @@ errors.
 - After a service-worker restart, Playwright gives no handle to the new
   worker, so the restart scenarios run last and drive the popup instead.
 - `npm audit` reports 4 dev-only findings (see above).
+
+## Autonomous-execution milestone (2026-10-10)
+
+| Suite | Command | Count | Notes |
+|---|---|---|---|
+| Backend | `cd backend && pytest --ignore=tests/live` | 631 | includes real Postgres + pgvector (`pgserver`) and a real `redis-server` (skipped, with a reason, if the binaries are unavailable); hash-locked environment |
+| Staged pipeline / classify / questions / evaluation | `tests/test_classify.py`, `test_questions.py`, `test_eval.py` | 29 + 15 + 3 | questions: unsafe-question regeneration, answer endpoint (validation, once-only, wrong phase, cross-tenant), reset_user_preference grounding |
+| Auth, tenants, rate limits, logging, CORS, migrations | `test_auth_defaults.py` (auth required by default), `test_auth.py`, `test_tenants.py`, `test_rate_limit.py`, `test_logging_cors_keys.py`, `test_migrations.py` | | cross-tenant attempts on every session endpoint |
+| Live progress | `test_events.py` | | streaming asserted against a real server thread; Starlette's `TestClient` and httpx's `ASGITransport` buffer whole responses and cannot show streaming |
+| Extension | `cd extension && npm test` | 102 | adds `lifecycle`, `progress`, `auth`, `appbridge`, `free-text-redaction` (asserts on the bytes passed to `fetch`) and `free-text-heuristics` suites |
+| Buggy Cloud | `cd buggy-cloud && npm test` | 12 | |
+| SDK | `cd sdk && npm test` | 65 | config, transport, evidence, flow, carrier, built script; `tests/contract-emit.mjs` feeds `backend/tests/test_sdk_contract.py` |
+| Browser E2E | `npm run e2e` / `e2e:buggy` / `e2e:sdk` / `e2e:demo` / `e2e:wire` / `e2e:sdk-wire` / `e2e:github` | 63 / 67 / 112 / 23 / 11 / 15 / 17 | authentication ON; offline engine unless `OPERON_E2E_GROQ=1` |
+| Evaluation | `cd backend && python eval.py --engine offline` (or `groq`) | 21 fixtures | results and caveats in `IMPLEMENTATION_STATUS.md` |
+
+Superseded statements in the sections below: "Session approval is not bound to
+a user identity" is no longer true (approval is bound to the authenticated
+principal and the proposal id); the ruff finding count is now zero; the
+extension unit count is 102 and the deterministic E2E is 63.

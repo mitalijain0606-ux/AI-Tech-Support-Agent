@@ -6,7 +6,13 @@
     "build": "node scripts/build.mjs",
     "test": "node --test 'tests/*.test.mjs'",
     "e2e": "node e2e/run.mjs",
-    "e2e:github": "node e2e/github-live.mjs"
+    "e2e:github": "node e2e/github-live.mjs",
+    "e2e:demo": "node e2e/github-demo.mjs",
+    "e2e:buggy": "node e2e/buggy-cloud.mjs",
+    "e2e:wire": "node e2e/free-text-wire.mjs",
+    "e2e:sdk": "node e2e/buggy-cloud-sdk.mjs",
+    "e2e:sdk-wire": "node e2e/sdk-wire.mjs",
+    "e2e:live": "node e2e/live-local.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
