@@ -88,7 +88,7 @@ export async function startBackend({ python = process.env.OPERON_E2E_PYTHON || "
     });
     return out.split("\n").find((l) => l.startsWith("token")).split(":")[1].trim();
   };
-  const tokens = auth ? { user: mint("e2e", "e2e-user"), teammate: mint("e2e", "e2e-teammate"), other: mint("other-co", "mallory") } : {};
+  const tokens = auth ? { user: mint("e2e", "e2e-user"), teammate: mint("e2e", "e2e-teammate"), other: mint("other-co", "mallory"), admin: mint("e2e", "e2e-admin", "admin") } : {};
   const proc = spawn(python, ["-m", "uvicorn", "operon_backend.main:app", "--host", "127.0.0.1", "--port", String(port)], {
     cwd: path.join(REPO_ROOT, "backend"),
     env: {
@@ -142,9 +142,11 @@ export async function startBackend({ python = process.env.OPERON_E2E_PYTHON || "
       JSON.parse(
         execFileSync(python, ["-c", STORED_EVIDENCE_PY, dbPath, sessionId], { encoding: "utf-8" }) || "[]",
       ),
+    /** Stops the backend; the returned promise settles once the process has exited (so its port is closed). */
     stop: () => {
+      const exited = proc.exitCode !== null || proc.signalCode !== null ? Promise.resolve() : new Promise((r) => proc.once("exit", r));
       proc.kill();
-      rmSync(dir, { recursive: true, force: true });
+      return exited.then(() => rmSync(dir, { recursive: true, force: true }));
     },
   };
 }

@@ -15,6 +15,10 @@ browser timing.
 | SDK in Buggy Cloud | `npm run e2e:sdk` | plain Chromium (no extension) + Buggy Cloud with the SDK panel + the real backend: all seven bugs, reject, approve, replay, failure paths, control | none |
 | Wire (SDK) | `npm run e2e:sdk-wire` | the same recording proxy in front of the backend for the SDK: fake secrets planted in console, URLs, storage, title, description | none |
 | Second app | `npm run e2e:buggy` | `buggy-cloud/` served locally: seven seeded bugs + a healthy control, via the `e2e-local` build | none (localhost only) |
+| Buggy Cloud screens | `npm run e2e:screens` | the five screens under every bug and the healthy control, the hidden diagnostics control (plain Chromium, no Operon) | none |
+| GitHub escalations | `npm run e2e:github-escalation` | a real 404 (missing repository) and a real 401 (`api.github.com/user`, anonymous) are diagnosed, not acted on, escalated and ticketed | outbound HTTPS to github.com |
+| Support dashboard | `npm run e2e:dashboard` | escalation tickets in `/dashboard`: planted markup stays text, the key stays in memory, tenant/user isolation, read-only | none |
+| Ticket reproduction | `npm run e2e:reproduce` | `scripts/reproduce-ticket.mjs` against real tickets and a local site: reproduced / not reproduced / `--recreate-storage`, host allowlist, sandbox blocking, key never printed | none |
 
 All suites start their own backend (`uvicorn`, a throwaway SQLite database,
 `GROQ_API_KEY` forced empty so diagnoses come from the labelled offline

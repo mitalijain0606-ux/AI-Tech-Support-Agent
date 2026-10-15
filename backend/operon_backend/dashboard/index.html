@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Operon Tickets</title>
+  <link rel="stylesheet" href="/dashboard/dashboard.css">
+  <script src="/dashboard/dashboard.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>Operon · Escalation tickets</h1>
+    <p class="muted">Read-only. Everything shown here is the redacted report Operon stored when it handed a session to a human.</p>
+  </header>
+  <section class="controls" aria-label="Connection">
+    <label>API key
+      <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="opk_… (kept in this tab's memory only)">
+    </label>
+    <label>Status
+      <select id="status-filter">
+        <option value="">any</option>
+        <option value="open" selected>open</option>
+        <option value="acknowledged">acknowledged</option>
+        <option value="closed">closed</option>
+      </select>
+    </label>
+    <button id="load" type="button">Load tickets</button>
+    <span id="message" role="status" class="muted"></span>
+  </section>
+  <main>
+    <section aria-label="Tickets" class="list">
+      <table>
+        <thead><tr><th>Opened</th><th>Status</th><th>Reason</th><th>Category</th><th>User message</th></tr></thead>
+        <tbody id="tickets"></tbody>
+      </table>
+    </section>
+    <section aria-label="Ticket detail" id="detail" class="detail" hidden></section>
+  </main>
+</body>
+</html>

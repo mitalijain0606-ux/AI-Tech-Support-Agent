@@ -69,7 +69,11 @@ export async function mountOperon({ root, reobserve }) {
       show([`Diagnosis: ${p.diagnosis}`, `Fix: ${p.action_id} ${JSON.stringify(p.parameters)}`, `Expected: ${p.expected_effect}`]);
     } else if (result.state === "escalated") {
       say("Operon could not safely fix this and has escalated it.", "escalated");
-      show([result.session?.escalation_state?.guidance ?? result.session?.escalation_state?.reason ?? ""]);
+      const ticket = result.session?.escalation_state?.ticket_id;
+      show([
+        result.session?.escalation_state?.guidance ?? result.session?.escalation_state?.reason ?? "",
+        ...(typeof ticket === "string" && /^tkt_[0-9a-f]{1,32}$/.test(ticket) ? [`Handed to the support team: ticket ${ticket}.`] : []),
+      ]);
     } else if (result.state === "needs_answer") {
       say(`Operon asks: ${result.question}`, "needs_answer");
     } else if (result.state === "needs_evidence") {

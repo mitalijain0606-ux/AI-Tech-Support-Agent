@@ -624,8 +624,11 @@ function viewPhaseFor(phase: BackendPhase): ViewPhase {
 function outcomeMessage(session: SupportSession): string {
   if (session.phase === "NEED_INFORMATION") return session.evidence_request?.reason ?? "";
   if (session.phase === "ESCALATED" && session.escalation_state) {
-    const { reason, guidance } = session.escalation_state;
-    return guidance && guidance !== reason ? `${reason}\n\n${guidance}` : reason;
+    const { reason, guidance, ticket_id } = session.escalation_state;
+    const text = guidance && guidance !== reason ? `${reason}\n\n${guidance}` : reason;
+    // Only a well-formed id is shown; it is plain text either way.
+    const ticket = typeof ticket_id === "string" && /^tkt_[0-9a-f]{1,32}$/.test(ticket_id) ? ticket_id : null;
+    return ticket ? `${text}\n\nHanded to the support team: ticket ${ticket}.` : text;
   }
   if (session.phase === "RESOLVED" && session.verification_state) return session.verification_state.message;
   return session.phase_history[session.phase_history.length - 1]?.reason ?? "";

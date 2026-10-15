@@ -46,3 +46,30 @@ def test_the_injection_fixtures_are_part_of_the_set():
     ids = {f["id"] for f in operon_eval.load_fixtures()}
     assert {"injection-only", "injection-plus-real-error", "injection-in-issue-text"} <= ids
     assert json.loads((ROOT / "eval_data" / "fixtures.json").read_text())["version"] == 1
+
+
+def test_each_stage_is_scored_on_its_own():
+    results = [asyncio.run(operon_eval.evaluate_fixture(f)) for f in operon_eval.load_fixtures()]
+    stages = operon_eval.summarise(results)["stages"]
+    assert stages["classify"]["accuracy"] == 1.0
+    assert stages["classify_llm"] is None  # only the staged model pipeline has a classify call
+    assert 0.0 <= stages["diagnose"]["accuracy"] <= 1.0 and 0.0 <= stages["plan"]["accuracy"] <= 1.0
+    assert stages["diagnose"]["scored"] == stages["plan"]["scored"] == len(results)
+
+
+def test_the_staged_pipeline_is_scored_per_stage(monkeypatch):
+    """A scripted model (no network): classify right, diagnose right, plan wrong —
+    and the summary says exactly which stage failed."""
+    from flow_helpers import FakeGroq, answer
+
+    fixture = next(f for f in operon_eval.load_fixtures() if f["expected"]["action_id"] == "clear_storage_key")
+    exp = fixture["expected"]
+    FakeGroq(monkeypatch, [
+        {"category": exp["category"], "confidence": 0.9, "needs_investigation": False},
+        answer(exp["category"], evidence_ids=exp["cites_any_of"][:1]),
+        {"proposed_action": None, "resolvable_automatically": False},
+    ])
+    monkeypatch.setattr(settings, "llm_pipeline", "staged")
+    result = asyncio.run(operon_eval.evaluate_fixture(fixture))
+    assert result["stages"] == {"classify": True, "classify_llm": True, "diagnose": True, "plan": False}
+    assert operon_eval.summarise([result])["pipeline"] == "staged"

@@ -1,10 +1,11 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session as DBSession
 
@@ -36,6 +37,7 @@ from operon_backend.schemas import (
     SessionOut,
     SessionPolicyRequest,
     SubmitEvidenceRequest,
+    TicketStatusRequest,
     VerifyRequest,
 )
 from operon_backend.session_service import (
@@ -49,6 +51,7 @@ from operon_backend.session_service import (
     record_verification,
 )
 from operon_backend.state_machine import IllegalTransition, SessionPhase
+from operon_backend import tickets as ticket_service
 from operon_backend.tripwire import TripwireHit, redact_free_text, scan_raw_payload
 
 logger = logging.getLogger(__name__)
@@ -458,3 +461,73 @@ async def session_verify_endpoint(
     except (IllegalTransition, RequestMismatch) as exc:
         return _conflict(exc)
     return _serialize(session)
+
+
+# ---- Escalation tickets --------------------------------------------------------------------
+# A ticket is visible to exactly the principals that can see its session: an
+# admin sees every ticket of their tenant, a user or viewer their own. Anything
+# else is a 404, the same as a ticket that does not exist.
+
+
+@app.get("/api/tickets")
+async def list_tickets_endpoint(
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: DBSession = Depends(get_db),
+    principal: Principal = Depends(rate_limited()),
+):
+    status = status or None  # "?status=" means any
+    if status is not None and status not in ticket_service.TICKET_STATUSES:
+        return JSONResponse(status_code=422, content={"detail": f"status must be one of {ticket_service.TICKET_STATUSES}"})
+    rows = ticket_service.visible_tickets(db, principal, status=status, limit=limit, offset=offset)
+    return {"tickets": [ticket_service.summary(t) for t in rows]}
+
+
+@app.get("/api/tickets/{ticket_id}")
+async def get_ticket_endpoint(ticket_id: str, db: DBSession = Depends(get_db), principal: Principal = Depends(rate_limited())):
+    ticket = ticket_service.get_visible_ticket(db, principal, ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="No such ticket")
+    return ticket_service.detail(ticket)
+
+
+@app.post("/api/tickets/{ticket_id}/status")
+async def ticket_status_endpoint(
+    ticket_id: str, body: TicketStatusRequest, db: DBSession = Depends(get_db), principal: Principal = Depends(rate_limited())
+):
+    ticket = ticket_service.get_visible_ticket(db, principal, ticket_id)
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="No such ticket")
+    try:
+        ticket = ticket_service.set_status(db, ticket, body.status, principal, body.note)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return ticket_service.detail(ticket)
+
+
+# ---- Support dashboard (read-only) -----------------------------------------------------------
+# Static files only; every byte of ticket data is fetched with the viewer's own
+# API key and rendered as text (never HTML). The CSP forbids inline script,
+# third-party origins, framing and form submission.
+
+DASHBOARD_DIR = Path(__file__).resolve().parent / "dashboard"
+DASHBOARD_FILES = {"index.html": "text/html", "dashboard.js": "text/javascript", "dashboard.css": "text/css"}
+DASHBOARD_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; "
+        "base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "X-Frame-Options": "DENY",
+    "Cache-Control": "no-store",
+}
+
+
+@app.get("/dashboard", include_in_schema=False)
+@app.get("/dashboard/{name}", include_in_schema=False)
+async def dashboard(name: str = "index.html"):
+    if name not in DASHBOARD_FILES:
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(DASHBOARD_DIR / name, media_type=DASHBOARD_FILES[name], headers=DASHBOARD_HEADERS)

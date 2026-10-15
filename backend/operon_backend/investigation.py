@@ -24,6 +24,8 @@ from sqlalchemy.orm import Session as DBSession
 from starlette.concurrency import run_in_threadpool
 
 from operon_backend.activity import record_activity
+from operon_backend.budget import budget_evidence
+from operon_backend.config import settings
 from operon_backend.db_models import KnowledgeChunk, SessionRecord
 from operon_backend.events import emit_stage
 from operon_backend.stages import classify
@@ -66,19 +68,8 @@ from operon_backend.tripwire import redact_credentials
 # Phases in which the session is waiting for evidence.
 INVESTIGABLE_PHASES = (SessionPhase.UNDERSTANDING.value, SessionPhase.NEED_INFORMATION.value)
 
-# How much of the evidence window the model is shown (most recent first).
-PROMPT_CAPS = {"console": 60, "network": 60, "cookies": 40, "storage": 25, "page": 5}
-
-
 def _tenant(session: SessionRecord) -> str | None:
     return (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
-
-
-def _trim(window: EvidenceBundle) -> EvidenceBundle:
-    trimmed = window.model_copy(deep=True)
-    for kind, cap in PROMPT_CAPS.items():
-        setattr(trimmed, kind, getattr(window, kind)[-cap:])
-    return trimmed
 
 
 def remediation_previously_failed(session: SessionRecord, action_id: str, params: dict) -> bool:
@@ -248,7 +239,15 @@ async def run_cycle(db: DBSession, session: SessionRecord, bundle: EvidenceBundl
         transition(session, SessionPhase.INVESTIGATING, f"requested evidence received ({record['request_id']})")
 
     # 2. Understanding
-    window = _trim(evidence_window(session))
+    # The model reasons over (and may only cite) the budgeted window — see budget.py.
+    window, budget_report = budget_evidence(evidence_window(session), settings.evidence_token_budget)
+    record_activity(
+        session,
+        "evidence_budget",
+        f"{budget_report['items_after']}/{budget_report['items_before']} item(s), ~{budget_report['tokens_after']} token(s) "
+        f"(budget {budget_report['token_budget']})",
+        **{k: v for k, v in budget_report.items() if k != "token_budget"},
+    )
     understanding = understand(window)
     record_activity(
         session,
@@ -314,6 +313,8 @@ async def run_cycle(db: DBSession, session: SessionRecord, bundle: EvidenceBundl
             "seq": len(session.diagnoses or []) + 1,
             "cycle": session.investigation_cycle,
             "engine": run.engine,
+            "pipeline": run.pipeline,
+            "stages": run.stages,
             "llm_calls": run.llm_calls,
             "rejected_answers": run.rejected,
             "category": diagnosis.category,
@@ -415,6 +416,12 @@ def _decide(db: DBSession, session: SessionRecord, diagnosis: Diagnosis, window:
             escalate(db, session, "escalated_hypothesis_contradicted",
                      f"evidence still points to {hyp.hypothesis_id}, which was already {hyp.status}; "
                      f"no alternative explanation found", guidance=diagnosis.reasoning)
+            return "escalated"
+        if diagnosis.confidence < settings.min_action_confidence:
+            escalate(db, session, "escalated_low_confidence",
+                     f"the diagnosis proposes '{action.action_id}' with confidence {diagnosis.confidence:.2f}, below the "
+                     f"{settings.min_action_confidence:.2f} needed to act automatically; a human should confirm the cause",
+                     guidance=diagnosis.reasoning)
             return "escalated"
 
         transition(session, SessionPhase.HYPOTHESIS_FORMED, f"formed {hyp.hypothesis_id} from the diagnosis")

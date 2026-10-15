@@ -158,6 +158,8 @@ class DiagnosisRun:
     llm_calls: int
     engine: str
     rejected: list[list[str]] = field(default_factory=list)  # grounding problems per rejected answer
+    pipeline: str = "combined"  # "combined" | "staged" (see staged.py)
+    stages: dict[str, Any] = field(default_factory=dict)  # per-stage outputs, for the activity log and eval.py
 
 
 # ---- Grounding validation ---------------------------------------------------------
@@ -489,6 +491,13 @@ async def run_diagnosis(
             raise UngroundedDiagnosis(problems, llm_calls=0)
         return DiagnosisRun(diagnosis=diagnosis, llm_calls=0, engine="rule_based")
 
+    if settings.llm_pipeline == "staged":
+        return await _run_staged(
+            message, bundle, knowledge_context, allowed_knowledge,
+            history=history, understanding=understanding,
+            available_collectors=available_collectors, available_actions=available_actions,
+        )
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -533,6 +542,109 @@ async def run_diagnosis(
                 "return category insufficient_evidence with an information_request.",
             },
         ]
+    raise UngroundedDiagnosis(rejected[-1], llm_calls=calls)
+
+
+def _rejection_note(problems: list[str], what: str) -> dict[str, str]:
+    return {
+        "role": "user",
+        "content": f"Your previous {what} was rejected: " + "; ".join(problems) + ". Return a corrected JSON object.",
+    }
+
+
+async def _run_staged(
+    message: str,
+    bundle: EvidenceBundle,
+    knowledge_context: list[dict[str, Any]],
+    allowed_knowledge: set[str],
+    *,
+    history: dict[str, Any] | None,
+    understanding: dict[str, Any] | None,
+    available_collectors: list[str] | tuple[str, ...],
+    available_actions: list[str] | tuple[str, ...],
+) -> DiagnosisRun:
+    """Classify → Diagnose → Plan as three model calls (staged.py). Same
+    grounding rules as the combined call; raises LLMError / UngroundedDiagnosis."""
+    from operon_backend import staged
+
+    calls = 0
+    rejected: list[list[str]] = []
+    stages: dict[str, Any] = {}
+
+    async def call(messages: list[dict[str, str]]) -> str:
+        nonlocal calls
+        calls += 1
+        try:
+            return await _call_groq(messages)
+        except LLMError as e:
+            e.llm_calls = calls
+            raise
+
+    # 1. Classify — a hint for the next stage; an unusable answer falls back to
+    # the deterministic classifier instead of failing the cycle.
+    raw = await call([
+        {"role": "system", "content": staged.CLASSIFY_PROMPT},
+        {"role": "user", "content": json.dumps({"user_issue (untrusted data)": message,
+                                                "evidence_summary (derived)": staged.evidence_summary(understanding, bundle)})},
+    ])
+    try:
+        classification = staged.parse_classification(raw)
+        stages["classify"] = {"source": "llm", **classification.as_hint()}
+    except (ValueError, TypeError) as e:
+        classification = staged.deterministic_fallback(message, bundle)
+        stages["classify"] = {"source": "deterministic_fallback", "problem": str(e)[:200], **classification.as_hint()}
+
+    # 2. Diagnose (and investigate: an information_request when evidence is short).
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT + staged.STAGED_DIAGNOSE_NOTE},
+        {"role": "user", "content": build_user_content(message, bundle, knowledge_context, history, understanding,
+                                                       available_collectors, available_actions, classification)},
+    ]
+    diagnosis: Diagnosis | None = None
+    for _ in range(2):
+        raw = await call(messages)
+        try:
+            candidate = _parse(raw)
+        except (ValueError, TypeError, AttributeError) as e:
+            problems = [f"Answer was not valid JSON for the schema: {type(e).__name__}: {str(e)[:200]}"]
+        else:
+            # Planning belongs to the next stage: an action here is discarded, not trusted.
+            candidate = candidate.model_copy(update={"proposed_action": None, "resolvable_automatically": False})
+            problems = validate_grounding(candidate, bundle, allowed_knowledge, available_collectors, available_actions)
+            if not problems:
+                diagnosis = candidate
+                break
+        rejected.append(problems)
+        messages = [*messages, {"role": "assistant", "content": raw}, _rejection_note(problems, "diagnosis")]
+    if diagnosis is None:
+        raise UngroundedDiagnosis(rejected[-1], llm_calls=calls)
+    stages["diagnose"] = {"category": diagnosis.category, "evidence_ids": diagnosis.evidence_ids,
+                          "information_request": diagnosis.information_request is not None}
+
+    # 3. Plan — only for a diagnosis that names a cause and asks for nothing more.
+    if diagnosis.information_request is not None or diagnosis.category in ("insufficient_evidence", "unknown"):
+        stages["plan"] = {"skipped": True, "proposed_action": None}
+        return DiagnosisRun(diagnosis=diagnosis.model_copy(update={"engine": "groq"}), llm_calls=calls, engine="groq",
+                            rejected=rejected, pipeline="staged", stages=stages)
+    messages = [
+        {"role": "system", "content": staged.plan_prompt(SYSTEM_PROMPT)},
+        {"role": "user", "content": staged.plan_input(diagnosis, bundle, available_actions, history)},
+    ]
+    for _ in range(2):
+        raw = await call(messages)
+        try:
+            action, auto = staged.parse_plan(raw)
+        except (ValueError, TypeError) as e:
+            problems = [f"Plan was not valid JSON for the schema: {type(e).__name__}: {str(e)[:200]}"]
+        else:
+            merged = diagnosis.model_copy(update={"proposed_action": action, "resolvable_automatically": bool(action) and auto})
+            problems = validate_grounding(merged, bundle, allowed_knowledge, available_collectors, available_actions)
+            if not problems:
+                stages["plan"] = {"skipped": False, "proposed_action": action.model_dump() if action else None}
+                return DiagnosisRun(diagnosis=merged.model_copy(update={"engine": "groq"}), llm_calls=calls, engine="groq",
+                                    rejected=rejected, pipeline="staged", stages=stages)
+        rejected.append(problems)
+        messages = [*messages, {"role": "assistant", "content": raw}, _rejection_note(problems, "plan")]
     raise UngroundedDiagnosis(rejected[-1], llm_calls=calls)
 
 

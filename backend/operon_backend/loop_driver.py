@@ -89,10 +89,17 @@ def escalate(db: DBSession, session: SessionRecord, resolution_state: str, reaso
         ],
         "last_verification": last_verification,
     }
+    # The hand-off to a human: one ticket per escalated session, with the full
+    # structured report (tickets.py), opened in the same transaction.
+    from operon_backend.tickets import new_ticket_id, open_ticket  # local: tickets imports auth, which imports db
+
+    ticket_id = new_ticket_id(db, session)
+    session.escalation_state["ticket_id"] = ticket_id
     transition(session, SessionPhase.ESCALATED, reason)
-    record_activity(session, "escalated", reason, resolution_state=resolution_state)
+    record_activity(session, "escalated", reason, resolution_state=resolution_state, ticket_id=ticket_id)
     tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
     record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
+    open_ticket(db, session, ticket_id)
     db.commit()
     db.refresh(session)
     return session

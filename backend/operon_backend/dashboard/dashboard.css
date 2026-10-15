@@ -1,0 +1,30 @@
+:root { --bg: #fff; --fg: #1d2330; --muted: #5b6475; --line: #dde2ea; --accent: #2457c5; --row: #f4f6fa; --bad: #b42318; --ok: #157347; }
+@media (prefers-color-scheme: dark) { :root { --bg: #12151b; --fg: #e6e9ef; --muted: #9aa3b2; --line: #2a303b; --accent: #7aa2ff; --row: #1a1e26; --bad: #ff8a80; --ok: #6fd39b; } }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+h2 { font-size: 16px; margin: 20px 0 8px; }
+h3 { font-size: 14px; margin: 12px 0 6px; }
+.muted { color: var(--muted); }
+.controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 16px 0; }
+.controls label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+input, select, button { font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+input { min-width: min(320px, 80vw); }
+button { background: var(--accent); color: #fff; border-color: var(--accent); cursor: pointer; }
+main { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 1100px) { main { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); } }
+.list { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tbody tr { cursor: pointer; }
+tbody tr:hover, tbody tr.selected { background: var(--row); }
+.detail { border: 1px solid var(--line); border-radius: 8px; padding: 12px 16px; overflow-wrap: anywhere; }
+dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; }
+dt { color: var(--muted); }
+dd { margin: 0; }
+pre { white-space: pre-wrap; background: var(--row); padding: 8px; border-radius: 6px; margin: 4px 0; font-size: 12px; max-height: 320px; overflow: auto; }
+ol.timeline { padding-left: 20px; margin: 0; }
+ol.timeline li { margin: 2px 0; }
+.badge { display: inline-block; padding: 0 6px; border-radius: 10px; border: 1px solid var(--line); font-size: 12px; }
+.bad { color: var(--bad); }
+.ok { color: var(--ok); }

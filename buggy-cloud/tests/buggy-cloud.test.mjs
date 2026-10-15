@@ -159,3 +159,10 @@ test("a scenario can be reset and run again: only Buggy Cloud's own state is rem
   assert.deepEqual([wantsReset("?bug=2&reset=1"), wantsReset("?bug=2"), wantsReset("?reset=0")], [true, false, false]);
   assert.deepEqual(await resetScenario(memory(), {}), { unregistered: 0 }); // no service worker support is fine
 });
+
+test("five screens, each reachable by its own hash route; unknown routes show the overview", async () => {
+  const { ROUTES, routeOf } = await import("../src/ui.js");
+  assert.deepEqual(ROUTES.map((r) => r.title), ["Overview", "Projects", "Reports", "Account", "Settings"]);
+  for (const r of ROUTES) assert.equal(routeOf(r.hash), r);
+  for (const bad of ["", "#", "#/nope", "#/projects/../settings", "javascript:alert(1)"]) assert.equal(routeOf(bad).title, "Overview", bad);
+});

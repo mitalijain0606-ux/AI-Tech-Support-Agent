@@ -228,6 +228,7 @@ export interface EscalationRecord {
   resolution_state: string;
   guidance: string | null;
   at: string;
+  ticket_id?: string | null; // the hand-off to a human (backend tickets.py)
 }
 
 export interface ActivityEntry {

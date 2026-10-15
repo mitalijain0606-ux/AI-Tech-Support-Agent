@@ -144,10 +144,11 @@ try {
     await browser.setToken(backend.tokens.user);
     await popupPage.reload();
     await popupPage.locator("textarea").waitFor();
-    backend.stop();
+    await backend.stop(); // gone, not shutting down: the next request must find nothing listening
     await popup.ask("anything wrong?");
     await popupPage.locator("header", { hasText: "Error" }).waitFor({ timeout: 30_000 });
-    check("failure: with the backend down the popup says it cannot reach it (never a success)", /Can't reach the Operon backend/.test(await popup.text()));
+    const downText = await popup.text();
+    check("failure: with the backend down the popup says it cannot reach it (never a success)", /Can't reach the Operon backend/.test(downText), downText.replace(/\s+/g, " ").slice(0, 200));
     await popupPage.close();
     await target.close();
   }

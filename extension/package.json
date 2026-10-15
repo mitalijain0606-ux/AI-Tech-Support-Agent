@@ -12,7 +12,11 @@
     "e2e:wire": "node e2e/free-text-wire.mjs",
     "e2e:sdk": "node e2e/buggy-cloud-sdk.mjs",
     "e2e:sdk-wire": "node e2e/sdk-wire.mjs",
-    "e2e:live": "node e2e/live-local.mjs"
+    "e2e:live": "node e2e/live-local.mjs",
+    "e2e:dashboard": "node e2e/dashboard.mjs",
+    "e2e:screens": "node e2e/buggy-screens.mjs",
+    "e2e:github-escalation": "node e2e/github-escalation.mjs",
+    "e2e:reproduce": "node e2e/reproduce.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

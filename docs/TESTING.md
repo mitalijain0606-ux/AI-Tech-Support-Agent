@@ -86,6 +86,35 @@ validation milestone. Status words mean:
   validated at build time.
 - `npm run e2e` / `npm run e2e:github`: browser E2E against the actual
   build and the real backend. See [`../extension/e2e/README.md`](../extension/e2e/README.md).
+- `npm run e2e:github-escalation`: real github.com, two genuine server-side
+  failures (a 404 for a missing repository, a 401 for an anonymous request to
+  `api.github.com/user`) must be diagnosed, not acted on, escalated, and
+  ticketed. Anonymous and read-only; exit 2 = BLOCKED.
+- `npm run e2e:dashboard`: the support dashboard in Chromium against the real
+  backend — markup planted in a ticket renders as inert text, no script runs,
+  the key stays out of storage and the URL, tenants and users see only their
+  own tickets, the page is read-only.
+- `npm run e2e:reproduce`: `scripts/reproduce-ticket.mjs` against real tickets —
+  a server-side failure reproduces, a client-state failure does not (and does
+  with `--recreate-storage`), other hosts are blocked in the sandbox, an
+  unlisted host and another tenant's key are refused, the key never appears in
+  the output.
+- `npm run e2e:screens`: Buggy Cloud's five screens under every seeded bug and
+  the healthy control, plus the hidden diagnostics control.
+
+### Backend additions (2026-10-14)
+
+- `test_tickets.py`: a ticket per escalation (no-action, policy DENY, low
+  confidence), idempotent, report content and re-redaction, cross-tenant and
+  cross-user 404s, admin-only triage, the dashboard's CSP and file allowlist,
+  text-only rendering.
+- `test_budget.py`: dedupe, truncation, redaction, the token cap keeping the
+  explanatory evidence, determinism, and the `evidence_budget` activity entry.
+- `test_staged_pipeline.py`: the three staged calls, their prompts and inputs,
+  discarded diagnose-stage actions, plan regeneration and fail-safe, the
+  deterministic classification fallback, a session driven to a proposal.
+- `test_eval.py`: per-stage scoring for both pipelines.
+- `test_migrations.py`: migration `0003` up and down on SQLite and PostgreSQL.
 
 ### Static
 

@@ -63,28 +63,38 @@ an undiscovered GitHub defect.
   before relying on it live — don't promise it in a demo you haven't
   rehearsed on that exact machine.
 
-## Candidates — documented, not yet implemented
+### 3. Expired / missing session (401) — real response, our trigger
 
-### 3. Expired session — real, not yet wired
+- **How it's created:** while Operon observes the page, the visitor makes a
+  request that needs a signed-in GitHub session —
+  `fetch("https://api.github.com/user")` from a github.com tab in an
+  anonymous profile. The trigger is ours (one request, labelled as such in
+  the test); the **401 is GitHub's own answer**, exactly what an expired
+  session gets. Forcing your real session to expire on command is not
+  possible, which is why the trigger is staged and the response is not.
+- **Evidence:** `Network.responseReceived` with status 401 for
+  `api.github.com/user`, recorded as a `NetworkEvidence` entry.
+- **Diagnosis:** `category: "auth_failure"`, no action — signing in again is
+  the user's own step and Operon never handles credentials (prompt rule 5a,
+  classifier in `stages.py`).
+- **Outcome:** ESCALATED (`escalated_no_action_available`) with that
+  guidance, and an escalation ticket for the support team.
+- **Proof:** `cd extension && npm run e2e:github-escalation` (real
+  github.com; one API request, anonymous).
 
-A real 401 when your actual GitHub session cookie has lapsed. Fully
-diagnosable with the machinery that already exists (cookie metadata +
-network status capture) — nothing new to build on the evidence side. What's
-missing: a controlled way to demo it, since you can't force your own real
-session to expire on command without actually logging out, which is
-disruptive to test repeatedly. Lowest priority of the three candidates
-because of that friction, not because of technical difficulty.
+### 4. A genuine escalation case (404 from GitHub itself) — real
 
-### 4. A genuine escalation case (4xx/5xx from GitHub itself) — real, harder to stage
-
-Pointing at something that genuinely 404s or errors server-side (e.g. a
-broken/private repo link) would produce a real escalation — Operon
-correctly refusing to act because nothing client-side can fix a
-server-side problem. The friction: reliably producing this without
-spamming GitHub's real API (rate-limiting it deliberately would be poor
-practice, not just impractical) needs a specific, real, already-broken URL
-picked in advance rather than an on-demand trigger. Worth having one ready
-for a demo rather than building a mechanism to force it.
+- **How it occurs:** a link to a repository that does not exist
+  (`github.com/octocat/operon-e2e-this-repository-does-not-exist`). The
+  visitor reproduces it by reloading while Operon observes; GitHub answers
+  404. One page load, no rate-limit pressure, nothing staged.
+- **Evidence:** `Network.responseReceived` with status 404 for the document.
+- **Diagnosis:** `category: "network_error"`, no action — nothing in the
+  browser can make a missing repository exist.
+- **Outcome:** ESCALATED with a ticket carrying the full report (user
+  message, the 404 evidence, the diagnosis, the timeline).
+- **Proof:** the same `npm run e2e:github-escalation` run (12/12 on
+  2026-10-14).
 
 ## Adding a new scenario here
 

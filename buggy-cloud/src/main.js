@@ -13,7 +13,7 @@ if (wantsReset(location.search)) {
   await resetScenario(localStorage);
   const clean = new URLSearchParams(location.search);
   clean.delete("reset");
-  history.replaceState(null, "", `${location.pathname}${clean.toString() ? `?${clean}` : ""}`);
+  history.replaceState(null, "", `${location.pathname}${clean.toString() ? `?${clean}` : ""}${location.hash}`);
 }
 seedBug(bug, localStorage);
 
@@ -21,7 +21,7 @@ const api = createApi({ reportsBase: document.querySelector('meta[name="reports-
 
 async function load() {
   const errors = [];
-  const state = { projects: null, account: null, reports: null, prefs: { ...DEFAULT_PREFS }, errors, bug };
+  const state = { projects: null, account: null, reports: null, prefs: { ...DEFAULT_PREFS }, errors, bug, settingsOk: true, diagnostics: showDiagnostics };
   const fail = (what, err) => {
     console.error(`${what}: ${err.name === "Error" ? "" : `${err.name}: `}${err.message}`);
     errors.push(`${what}.`);
@@ -37,6 +37,7 @@ async function load() {
   try {
     JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}");
   } catch (err) {
+    state.settingsOk = false;
     fail(`Failed to load saved settings (${SETTINGS_KEY})`, err);
   }
   try {
@@ -65,9 +66,19 @@ async function loadReports() {
   return api.reports();
 }
 
+// The hidden diagnostics control (scenario switcher) appears on Settings only with ?diagnostics=1.
+const showDiagnostics = new URLSearchParams(location.search).get("diagnostics") === "1";
+let lastState = null;
+
 async function paint() {
-  render(root, await load());
+  lastState = await load();
+  render(root, lastState, location.hash || "#/");
 }
+
+// Switching screens re-renders the loaded state; it does not re-fetch.
+window.addEventListener("hashchange", () => {
+  if (lastState) render(root, lastState, location.hash || "#/");
+});
 
 // Start the Operon SDK before the first paint, so errors from page load are already captured.
 const operonClient = await mountOperon({ root, reobserve: paint });

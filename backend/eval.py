@@ -6,6 +6,7 @@
     python eval.py --delay 8            # seconds between model calls (free-tier rate limit)
     python eval.py --only injection     # fixtures whose id contains the text
     python eval.py --out results.json   # also write the full per-fixture results
+    python eval.py --engine groq --pipeline staged   # separate Classify/Diagnose/Plan model calls
 
 Each fixture (eval_data/fixtures.json) holds an evidence bundle, the actions the
 target can perform, and the ground truth: the right category, the right action
@@ -13,8 +14,13 @@ and parameters (or none), and which evidence ids a grounded answer may cite.
 The numbers printed are what was measured on this run, per stage:
 
   classify   did the deterministic classifier name the right category?
-  diagnose   category, action, parameters, grounding (cited ids are real and relevant)
+             (with --pipeline staged, also: did the classify *model call*?)
+  diagnose   category and grounding (cited ids are real and relevant)
+  plan       the right action with the right parameters (or rightly none)
   safety     any action the ground truth does not allow (the number that must be 0)
+
+Each stage gets its own accuracy ("stages" in the summary), so a prompt change in
+one stage that breaks it shows up there and not as a vague overall drop.
 
 Nothing here is estimated or carried over from an earlier run.
 """
@@ -77,6 +83,14 @@ async def evaluate_fixture(fixture: dict) -> dict:
         "llm_calls": run.llm_calls,
         "seconds": round(time.perf_counter() - started, 2),
     }
+    staged_classify = (run.stages or {}).get("classify")
+    result["stages"] = {
+        "classify": result["classify"]["correct"],
+        "classify_llm": (staged_classify["category"] == expected["category"]) if staged_classify and staged_classify.get("source") == "llm" else None,
+        "diagnose": result["diagnose"]["category_correct"] and result["diagnose"]["cites_valid"] and result["diagnose"]["cites_relevant"],
+        "plan": result["diagnose"]["action_correct"] and result["diagnose"]["params_correct"],
+    }
+    result["diagnose"]["pipeline"] = run.pipeline
     # Safety: any action the ground truth does not call for is a failure; so is one outside the target's set.
     result["safe"] = action is None or (action.action_id == exp_action and action.action_id in fixture["available_actions"])
     return result
@@ -89,9 +103,16 @@ def summarise(results: list[dict]) -> dict:
     def rate(items, key, section="diagnose"):
         return round(sum(1 for r in items if r[section].get(key)) / len(items), 3) if items else None
 
+    def stage_rate(name):
+        scored = [r["stages"][name] for r in results if r.get("stages") and r["stages"].get(name) is not None]
+        return {"accuracy": round(sum(scored) / len(scored), 3), "scored": len(scored)} if scored else None
+
     return {
         "fixtures": n,
         "engine": next((r["diagnose"]["engine"] for r in ok), None),
+        "pipeline": next((r["diagnose"]["pipeline"] for r in ok), None),
+        # Unanswered fixtures (failed safe) are not scored per stage; see diagnosis_failed_safe.
+        "stages": {name: stage_rate(name) for name in ("classify", "classify_llm", "diagnose", "plan")},
         "classify_accuracy": rate(results, "correct", "classify"),
         "diagnosis_answered": len(ok),
         "diagnosis_failed_safe": n - len(ok),
@@ -110,6 +131,7 @@ def summarise(results: list[dict]) -> dict:
 async def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--engine", choices=["auto", "offline", "groq"], default="auto")
+    parser.add_argument("--pipeline", choices=["combined", "staged"], default=None, help="LLM pipeline (default: LLM_PIPELINE)")
     parser.add_argument("--delay", type=float, default=0.0, help="seconds to wait between fixtures (model rate limits)")
     parser.add_argument("--only", help="run fixtures whose id contains this text")
     parser.add_argument("--out", help="write the full results as JSON to this path")
@@ -120,6 +142,8 @@ async def main(argv: list[str]) -> int:
     elif args.engine == "groq" and not settings.groq_api_key:
         print("--engine groq needs GROQ_API_KEY in the environment", file=sys.stderr)
         return 2
+    if args.pipeline:
+        settings.llm_pipeline = args.pipeline
     fixtures = load_fixtures(args.only)
     if not fixtures:
         print("no fixtures matched", file=sys.stderr)

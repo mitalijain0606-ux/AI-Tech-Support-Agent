@@ -1,4 +1,4 @@
-# Phase 1 — GitHub demo (active — core loop done, live services validated)
+# Phase 1 — GitHub demo (core loop done and verified on github.com; deployment and rehearsal remain)
 
 ## Goal
 
@@ -67,21 +67,21 @@ for us — same as any healthy production app).
   writes `dist/github/`. Verified: correct manifest, correctly-scoped
   `host_permissions`, 150KB popup bundle. Refuses to build `fake-saas` until
   its target config has a real domain, as designed.
-- [~] **M9 — End-to-end run, live.** Partly done (validation milestone):
-  - the **actual built extension** loads in Playwright's Chromium and runs
-    the whole loop (evidence request → collection → investigation →
-    approval → execution → server-side verification → RESOLVED/ESCALATED)
-    against the real backend, on local fixture pages: `npm run e2e`;
-  - on **real github.com** (a public page, read-only, anonymous, nothing
-    approved), the content script loads, real evidence reaches the backend,
-    the investigation stays grounded, and a healthy page ends in
-    NEED_INFORMATION: `npm run e2e:github`;
-  - live Groq and the real embedding model are validated separately
-    (`backend/scripts/validate_services.py`, `backend/tests/live/`);
-  - **still manual:** the seeded-bug demo on github.com with real Groq and
-    an approved fix. The automated github.com run never approves anything.
-- [ ] **M10 — Backend deployed.** Not started — no deployment work in the
-  validation milestone.
+- [x] **M9 — End-to-end run, live.** Done in Playwright's Chromium with the
+  **actual built extension** and the real backend:
+  - the whole loop on local fixture pages: `npm run e2e`;
+  - on **real github.com**, read-only and anonymous: `npm run e2e:github`
+    (a healthy page stays grounded and ends asking for evidence);
+  - the **seeded-bug demo with an approved fix** on real github.com, deny then
+    approve with backend verification: `npm run e2e:demo` (offline engine and,
+    with `OPERON_E2E_GROQ=1`, the real Groq model);
+  - two genuine **escalations** from GitHub's own responses (a real 404 and a
+    real 401), each handed to a human as a ticket: `npm run e2e:github-escalation`
+    (scenarios 3 and 4 in [`github-scenarios.md`](github-scenarios.md)).
+  Still manual: the same demo in a desktop (branded) Chrome, which no longer
+  loads unpacked extensions from the command line (see below).
+- [ ] **M10 — Backend deployed.** Not started — blocked on the owner's Render,
+  Neon and Groq accounts (steps in [`../DEPLOYMENT.md`](../DEPLOYMENT.md)).
 - [ ] **M11 — Demo rehearsed.** Run through at least twice, ideally with a
   recording, before showing anyone else.
 
@@ -97,7 +97,7 @@ This matches Chrome's rollout of restrictions on command-line extension
 loading (aimed at automated malware installs) — it does **not** affect the
 normal developer path.
 
-Practical effect: M9 has to be verified manually, the same way you'd
+Practical effect: in desktop Chrome the demo is checked manually, the same way you'd
 actually use this day to day —
 
 1. `chrome://extensions` → enable **Developer mode** → **Load unpacked** →

@@ -20,6 +20,9 @@ dev = ["pytest", "pytest-asyncio", "ruff"]
 [tool.setuptools.packages.find]
 include = ["operon_backend*"]
 
+[tool.setuptools.package-data]
+operon_backend = ["dashboard/*"]
+
 [tool.ruff]
 line-length = 100
 

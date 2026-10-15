@@ -305,6 +305,13 @@ class ApprovalRequest(BaseModel):
     proposal_id: str | None = Field(default=None, max_length=64)
 
 
+class TicketStatusRequest(BaseModel):
+    """An admin's triage decision on an escalation ticket."""
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["open", "acknowledged", "closed"]
+    note: str | None = Field(default=None, max_length=500)
+
+
 class ActionResultRequest(BaseModel):
     action_id: str
     succeeded: bool

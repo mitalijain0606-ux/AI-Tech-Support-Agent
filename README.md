@@ -131,6 +131,9 @@ curl localhost:8000/health        # {"status":"ok"}
 | `GROQ_API_KEY` | empty | Groq key. **Empty → the labelled offline `rule_based` engine** diagnoses the known scenarios, and every diagnosis records which engine produced it. |
 | `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq chat model (JSON mode) |
 | `GROQ_TIMEOUT_SECONDS` | `30` | per-request timeout |
+| `LLM_PIPELINE` | `combined` | `staged` runs Classify, Diagnose and Plan as three model calls (more calls, per-stage scoring in `eval.py`) |
+| `MIN_ACTION_CONFIDENCE` | `0.5` | a diagnosis less confident than this escalates to a human instead of proposing a fix |
+| `EVIDENCE_TOKEN_BUDGET` | `8000` | approximate token cap on the evidence shown to the model per cycle |
 | `EMBEDDING_RETRY_COOLDOWN_SECONDS` | `60` | after the embedding model fails to load, how long before trying again |
 | `DATABASE_URL` | `sqlite:///./operon.db` | any SQLAlchemy URL; for Postgres run `alembic upgrade head` first |
 | `AUTH_REQUIRED` | `true` (also in `.env.example`) | API keys (`python scripts/manage_keys.py create …`) pasted into the popup under *Backend access*. Set `false` only for throwaway local experiments; `ENVIRONMENT=production` refuses to start without auth |
@@ -184,10 +187,38 @@ npm run e2e:demo                        # the approve / deny demo on a real gith
 npm run e2e:buggy                       # the second app through the extension: 7 seeded bugs
 npm run e2e:sdk                         # the same app through the SDK (no extension)
 npm run e2e:sdk-wire                    # SDK request bytes: fake secrets must not appear
-cd ../sdk && npm test                   # SDK unit tests
 npm run e2e:wire                        # fake secrets typed into the popup never reach the network (recording proxy)
-cd ../backend && python eval.py --engine offline   # measured evaluation (add --engine groq for the model)
+npm run e2e:screens                     # Buggy Cloud's five screens under every seeded bug
+npm run e2e:dashboard                   # escalation tickets in the read-only support dashboard (XSS, isolation)
+npm run e2e:reproduce                   # sandbox reproduction of escalated tickets
+npm run e2e:github-escalation           # real 404 / 401 from github.com escalate with a ticket
+cd ../sdk && npm test                   # SDK unit tests
+cd .. && node --test scripts/tests/*.test.mjs        # reproduction tool unit tests
+cd backend && python eval.py --engine offline       # measured evaluation (--engine groq [--pipeline staged] for the model)
 ```
+
+## Escalation tickets and the support dashboard
+
+When Operon stops — policy denies the fix, the diagnosis is not confident
+enough (`MIN_ACTION_CONFIDENCE`), a fix failed verification, a limit was hit,
+or nothing in the browser can fix the problem — it opens a **ticket** with a
+structured, redacted report for a human: the user's message, the evidence,
+every diagnosis, the attempted actions and their outcomes, the verification
+result and the timeline.
+
+- API: `GET /api/tickets`, `GET /api/tickets/{id}` (an admin key sees its
+  tenant's tickets, a user key its own), `POST /api/tickets/{id}/status`
+  (admin only: `open` / `acknowledged` / `closed`).
+- Dashboard: open `http://localhost:8000/dashboard`, paste an admin key (kept in
+  the tab's memory only) and browse tickets. It is read-only and renders every
+  value as text under a strict Content-Security-Policy.
+- Reproduction (local only): `OPERON_API_KEY=<admin key> node
+  scripts/reproduce-ticket.mjs --ticket tkt_… --allow-host 127.0.0.1` replays the ticket's page in a
+  disposable headless Chromium and reports whether the failure reproduces
+  without the customer's own browser state. `--allow-host` names the host it may
+  open and is required even for localhost (a ticket's URL comes from a customer's
+  page); `--recreate-storage` plants a synthetic invalid value under a reported
+  corrupted key.
 
 What each suite covers, what is stubbed, and the latest validation results
 are in [`docs/TESTING.md`](docs/TESTING.md).

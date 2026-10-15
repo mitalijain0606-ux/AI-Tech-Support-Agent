@@ -31,10 +31,10 @@ operon/
 │   ├── requirements.txt
 │   ├── .env.example              GROQ_API_KEY, GROQ_MODEL — documented, never committed with values
 │   ├── requirements.in, requirements-dev.in   inputs; requirements*.txt are hash-locked (uv)
-│   ├── alembic.ini, migrations/  baseline schema + pgvector (Postgres-only) revisions
+│   ├── alembic.ini, migrations/  baseline schema, pgvector (Postgres-only), tickets revisions
 │   ├── eval.py, eval_data/       measured evaluation against ground-truth fixtures
 │   ├── operon_backend/
-│   │   ├── main.py               HTTP API: /api/sessions/* (incl. /answer, /events), legacy /api/diagnose + /api/policy, /health, /ready
+│   │   ├── main.py               HTTP API: /api/sessions/* (incl. /answer, /events), /api/tickets/*, /dashboard, legacy /api/diagnose + /api/policy, /health, /ready
 │   │   ├── auth.py               API keys, tenants, roles; 404-not-403 isolation; client_ip
 │   │   ├── ratelimit.py          per-caller limits (memory / Redis, fail-open)
 │   │   ├── events.py             EventBus / RedisEventBus, SSE stream
@@ -43,13 +43,17 @@ operon/
 │   │   ├── stages.py             PIPELINE_STAGES, deterministic classify, stage() reporting
 │   │   ├── config.py             typed settings from env / .env
 │   │   ├── schemas.py            evidence, requests, plans, observations — bounded, verify requests forbid extra fields
-│   │   ├── db.py, db_models.py   SQLAlchemy; SessionRecord (the SupportSession), KnowledgeChunk
+│   │   ├── db.py, db_models.py   SQLAlchemy; SessionRecord (the SupportSession), KnowledgeChunk, ApiKey, Ticket
 │   │   ├── state_machine.py      phases and legal transitions (backend is the sole authority)
 │   │   ├── session_service.py    create, policy, approval, action result, verification, escalation
 │   │   ├── investigation.py      one bounded cycle: evidence → understanding → retrieval → diagnosis → decision
 │   │   ├── evidence.py           evidence requests, ingestion/provenance, evidence window, understanding
-│   │   ├── loop_driver.py        hard limits, hypothesis model
+│   │   ├── budget.py             evidence budgeting before the prompt: filter, dedupe, truncate, prune, redact, token cap
+│   │   ├── loop_driver.py        hard limits, hypothesis model, escalate() (opens the ticket)
+│   │   ├── tickets.py            escalation tickets: redacted report, visibility, admin triage
+│   │   ├── dashboard/            read-only support dashboard (static HTML/JS/CSS, strict CSP)
 │   │   ├── llm.py                Groq client + grounding validation + regeneration; offline rule_based engine
+│   │   ├── staged.py             LLM_PIPELINE=staged: classify / plan prompts and parsing
 │   │   ├── planning.py           grounded diagnosis → structured remediation plan + verification plan
 │   │   ├── verification.py       server-side passed / failed / inconclusive decision
 │   │   ├── policy.py             closed action set + ALLOW / REQUIRE_APPROVAL / DENY
@@ -106,6 +110,7 @@ operon/
 │                                 (classic-script build), tests/ (node:test), README.md
 ├── buggy-cloud/                  the second application (see its README)
 ├── scripts/dev-local.mjs         one command: local backend + Buggy Cloud + builds + self-check
+├── scripts/reproduce-ticket.mjs  local-only sandbox reproduction of an escalated ticket (tests: scripts/tests/)
 ├── render.yaml                   Render blueprint — written, never deployed
 ├── .github/workflows/ci.yml      CI — written, never run on GitHub
 │

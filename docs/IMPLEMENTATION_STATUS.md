@@ -4,9 +4,9 @@ Single source of truth for what exists, what was actually verified, and what
 is left. Status words: **DONE** (implemented and exercised against the real
 thing), **PARTIAL**, **NOT STARTED**, **BLOCKED** (needs something only the
 owner can supply), **UNVERIFIED** (written, never run in its real
-environment). Last updated 2026-10-10. All work described here is
-**uncommitted** in the working tree; nothing was committed, pushed or
-deployed.
+environment). Last updated 2026-10-14. Work up to the 2026-10-12 pass is in
+commit `d5b9002` on branch `claude/pensive-euler-0njd58`; the 2026-10-14 pass
+below is **uncommitted** in the working tree (not pushed, nothing deployed).
 
 ## Phase 1 — GitHub demo and deployment readiness
 
@@ -127,7 +127,7 @@ fixture on a small set; treat them as a sanity check, not a benchmark.
    Render service, mint the first API key, build the extension with
    `OPERON_BACKEND_URL`, run `docs/DEMO_REHEARSAL.md` against it; push the branch so
    CI runs for the first time and fix whatever it finds.
-2. **Review and commit** this working tree (nothing is committed).
+2. **Review and commit** the 2026-10-14 pass (uncommitted; earlier work is in `d5b9002`).
 3. Key management beyond the CLI: rotation, expiry, an admin API.
 4. A larger, independently written evaluation set (the current 21 fixtures were
    written alongside the rules and prompt) and a recorded Groq baseline over
@@ -584,11 +584,79 @@ reload). The first combined extension run timed out waiting on bug 4 (the free t
 model is non-deterministic); the same scenario passed when re-run alone. Bugs 1, 3, 5, 6, 7 and the control were NOT
 real-model tested. Desktop Chrome was not driven by anyone: still a manual step.
 
+## Planning-docs completion pass (2026-10-14)
+
+Everything still open in `docs/plan/` that can be built and verified locally was
+built. Deployment items stay blocked on the owner's accounts.
+
+| Plan item | Status | Where / evidence |
+|---|---|---|
+| Escalation service: a structured report per escalation, ticket table | **DONE** | `operon_backend/tickets.py`, `Ticket` model, migration `0003`; one ticket per escalated session, opened in the same transaction as the escalation; report = user message, evidence, diagnoses, hypotheses, questions, policy decision, approval, attempted actions, verification, phase history, activity — redacted again and bounded. `test_tickets.py` |
+| Confidence thresholds routing to escalation | **DONE** | `MIN_ACTION_CONFIDENCE` (0.5): a proposed fix below it escalates (`escalated_low_confidence`) instead of being offered |
+| Ticket API (tenant-scoped) | **DONE** | `GET /api/tickets`, `GET /api/tickets/{id}` (admin: tenant; user/viewer: own), `POST /api/tickets/{id}/status` (admin only, history kept); other tenants/users get 404 |
+| Read-only support-agent dashboard | **DONE** | `/dashboard`: static, strict CSP (no inline script, no third-party origins, no framing, no forms), every value rendered with `textContent`, key kept in memory only. `npm run e2e:dashboard` 15/15 (planted `<img onerror>`/`<script>` stay text, no script runs, isolation, read-only) |
+| Users are told a ticket was opened | **DONE** | popup and Buggy Cloud's SDK panel add "Handed to the support team: ticket tkt_…" (well-formed ids only); `tests/escalation.test.mjs` |
+| Evidence budgeting as its own module | **DONE** | `operon_backend/budget.py`: filter → dedupe → truncate → prune → redact → cap (`EVIDENCE_TOKEN_BUDGET`, ~8k tokens), least informative evidence dropped first, ids never rewritten; the model sees and may cite only the budgeted window; `evidence_budget` activity entry each cycle. `test_budget.py` |
+| Phase E — Classify / Investigate / Diagnose / Plan as separate calls, scored per stage | **DONE, as an option** | `LLM_PIPELINE=staged` (`operon_backend/staged.py`, `llm._run_staged`): classify call (falls back to the deterministic classifier on an unusable answer), diagnose call (actions discarded; asks for evidence when short = investigate), plan call (only for a named cause), merged result validated with the same grounding rules, one regeneration per stage. `combined` stays the default (free-tier token limit). `eval.py --pipeline staged` scores each stage. `test_staged_pipeline.py`, `test_eval.py` |
+| Playwright sandbox reproduction (local only) | **DONE** | `scripts/reproduce-ticket.mjs`: fresh headless Chromium, explicit host allowlist (even localhost), other hosts aborted, no credentials, key from the environment only, output redacted with `sdk/redact.js`; verdict reproduced / partially / not reproduced; `--recreate-storage` plants a synthetic invalid value. Unit tests (`scripts/tests`) and `npm run e2e:reproduce` 11/11 |
+| GitHub scenario 3 (expired session) and 4 (genuine server-side failure) | **DONE** (live) | `npm run e2e:github-escalation` on real github.com: a real 404 (missing repository) → `network_error`; a real 401 (`api.github.com/user`, anonymous) → `auth_failure`; both no action, ESCALATED, ticket open. 14/14, including the popup naming the ticket |
+| Phase 1 M9 (live end-to-end) | **DONE** | ticked in `01-phase-1-github.md`: `e2e`, `e2e:github`, `e2e:demo` (also with real Groq earlier), `e2e:github-escalation` |
+| Phase 2 M2 (4–5 screens) and the hidden diagnostics control | **DONE** | Buggy Cloud: Overview, Projects, Reports, Account, Settings (hash routes, same data, defects visible wherever their data is used); scenario switcher on Settings behind `?diagnostics=1`. `npm run e2e:screens` 38/38; every earlier Buggy Cloud suite still passes |
+| Separate `evidence_bundles` / `diagnoses` / `actions` / `verifications` tables; Redis `session:{id}` cache | **NOT DONE, deliberately** | reasons in `docs/plan/production-architecture.md` ("Deliberate deviations"): one-session transactional writes need no joins; PostgreSQL already gives restart and multi-instance safety, and a cache could serve a stale phase to an approval check |
+| Deploy (Phase 1 M10, Phase 2 M3/M5), rehearsals (M11, M7) | **BLOCKED** | need the owner's Render/Neon/Groq accounts and a real domain; rehearsal is a person's job |
+| GitHub API agent (`docs/knowledge-base/README.md`) | **NOT STARTED** (separate product, as decided) | |
+
+Defects found during this pass and fixed:
+
+- `e2e:buggy`'s "backend down" check failed once in a combined run: the harness's
+  `stop()` signalled the backend but did not wait for it to exit, so a request could
+  still reach a shutting-down server. `stop()` now resolves when the process has
+  exited and the test awaits it (test infrastructure; the product behaviour was right).
+- The reproduction tool first allowed localhost by default. A ticket's URL is
+  customer-supplied, so that would let a ticket point the engineer's sandbox browser
+  at services on their own machine; every host must now be allowed explicitly.
+
+### Measured: staged pipeline with the real model (Groq `openai/gpt-oss-120b`)
+
+`python eval.py --engine groq --pipeline staged --delay 15` over the 21 fixtures: 14
+answered; 7 hit Groq's free-tier 429 limit (three calls per fixture) and were re-run one
+at a time 60 s apart, all answered. Combined result (59 model calls):
+
+| Stage | Accuracy |
+|---|---|
+| classify (deterministic) | 21/21 |
+| classify (model call) | 16/21 |
+| diagnose (category + grounded, relevant citations) | 19/21 |
+| plan (right action and parameters, or rightly none) | 19/21 |
+| unsafe actions | **0** |
+
+Misses: `preference-no-action-available` and `console-failed-to-fetch` (diagnose:
+`dom_error` / `insufficient_evidence`, no action either way); `runtime-error` (plan:
+`reload` with other parameters) and `chunk-error-no-sw` (plan: no action instead of
+`reload`). The classify call's misses were corrected by the diagnose stage, which is
+why the classification is only a hint. One temperature-0.1 run on a small,
+self-written set: a sanity check, not a benchmark.
+
+### Verification (working tree, 2026-10-14)
+
+| Check | Result |
+|---|---|
+| Backend `pytest` (incl. real Postgres + pgvector, real Redis) | **680 passed**, 6 skipped (live tests) |
+| `ruff`, KB lint, `pip-audit` (hash-locked), `npm audit --omit=dev` (extension) | clean / ok / no known vulnerabilities / 0 |
+| Offline eval | 21/21 every stage, 0 unsafe |
+| Extension unit tests, `tsc` | **114** passed, clean |
+| SDK unit tests / Buggy Cloud unit tests / reproduction-tool unit tests | 65 / 14 / 4 passed |
+| `e2e` · `e2e:buggy` · `e2e:sdk` · `e2e:wire` · `e2e:sdk-wire` | 63/63 · 67/67 · 121/121 · 11/11 · 15/15 |
+| `e2e:demo` · `e2e:github` (real github.com) | 23/23 · 17/17 |
+| New: `e2e:dashboard` · `e2e:screens` · `e2e:reproduce` · `e2e:github-escalation` | 15/15 · 38/38 · 11/11 · 14/14 |
+| `e2e:live` against `node scripts/dev-local.mjs` (the one-command local stack) | 76/76; `/dashboard` served (200) |
+
 ## Status summary
 
 | Status | Items |
 |---|---|
-| **DONE** | github.com approve/deny demo; live progress stream; Render decision; config validation, `/health`, `/ready`; auth, tenants, approval enforcement; rate limits; logging; CORS policy; migrations, Postgres/pgvector, Redis (local); dependency locking and audits; staged pipeline and classify; answer endpoint; `eval.py` and fixtures; Buggy Cloud (7 bugs); SDK and `reset_user_preference`; second-app E2E; SDK-vs-extension design |
-| **PARTIAL** | CI (written, never run); evaluation (small, self-written, one model); credential redaction (heuristic, see second pass); verification (browser-reported); key lifecycle (CLI only, no expiry) |
-| **NOT STARTED** | key rotation/expiry and an admin API; non-Chromium browsers; published SDK package; learning-loop evaluation; the GitHub API agent |
-| **BLOCKED** (needs your accounts or authorization) | creating the Neon database and Render service; minting production keys; running CI on GitHub; testing against managed Redis; any commit or push |
+| **DONE** | github.com approve/deny demo; github.com escalation scenarios (real 404, real 401); live progress stream; Render decision; config validation, `/health`, `/ready`; auth, tenants, approval enforcement; rate limits; logging; CORS policy; migrations, Postgres/pgvector, Redis (local); dependency locking and audits; staged pipeline and classify; optional staged LLM calls with per-stage eval; evidence budgeting; escalation tickets, confidence routing, ticket API and read-only dashboard; sandbox reproduction tool (local); answer endpoint; `eval.py` and fixtures; Buggy Cloud (7 bugs, 5 screens, hidden diagnostics control); SDK and `reset_user_preference`; second-app E2E; SDK-vs-extension design |
+| **PARTIAL** | CI (written, never run on GitHub); evaluation (small, self-written, one model); credential redaction (heuristic, see second pass); verification (browser-reported); key lifecycle (CLI only, no expiry) |
+| **NOT DONE, deliberately** | separate evidence/diagnosis/action/verification tables; a Redis session cache (reasons in `production-architecture.md`) |
+| **NOT STARTED** | key rotation/expiry and an admin API; non-Chromium browsers; published SDK package; learning-loop evaluation; the GitHub API agent (separate product) |
+| **BLOCKED** (needs your accounts or authorization) | creating the Neon database and Render service; a real domain and the `fake-saas` target; minting production keys; running CI on GitHub; testing against managed Redis; demo rehearsals in desktop Chrome; committing or pushing this pass |

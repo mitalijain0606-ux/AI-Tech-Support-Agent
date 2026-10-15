@@ -235,13 +235,30 @@ Phase 2 did. Proposed order, each phase independently useful and testable:
 Each phase is a real, working increment — not a partial rewrite you can't
 ship until the whole thing lands.
 
-### Status (validation milestone)
+### Status (2026-10-14)
 
 | Phase | Status |
 |---|---|
-| A — Persistence | **Partial**: SQLAlchemy models and the session API are done on SQLite (`DATABASE_URL`). Postgres/Neon, Alembic and Redis are **not implemented**. |
-| B — Knowledge base | **Done** on SQLite (`knowledge_chunks`, brute-force cosine). pgvector is **not implemented**. |
-| C — Retrieve stage | **Done** (retrieval each changed cycle, `knowledge_refs` grounding, redacted history ingestion). The real embedding model and retrieval are validated live, and startup indexes the KB on a fresh database. See [`../TESTING.md`](../TESTING.md). |
+| A — Persistence | **Done** on SQLite and real PostgreSQL: SQLAlchemy models, Alembic migrations (`0001` baseline, `0002` pgvector, `0003` tickets), the session API, Redis for shared rate limits and the live event bus. Two planned pieces were deliberately **not** built, see below. |
+| B — Knowledge base | **Done**: `knowledge_chunks`, curated KB indexed at startup, pgvector HNSW search on PostgreSQL (scan on SQLite). |
+| C — Retrieve stage | **Done** (retrieval each changed cycle, `knowledge_refs` grounding, redacted history ingestion). Validated live; see [`../TESTING.md`](../TESTING.md). |
 | D — Extension refactor | **Done**: session-oriented, request-driven, verified end to end in Chromium. |
-| E — Five-stage split / `eval.py` | **Not implemented**. Diagnosis is one grounded call per cycle. |
-| Deployment (Render/Neon/Upstash) | **Not implemented**: no deployment work has been done. |
+| E — Five-stage split / `eval.py` | **Done, as an option**: `LLM_PIPELINE=staged` runs Classify, Diagnose (which also investigates: it asks for evidence when it is short) and Plan as three model calls with their own prompts and schemas, each validated (`operon_backend/staged.py`); `eval.py` scores every stage on its own (`stages` in its summary). `combined` (one grounded call) stays the default because the free tier allows ~8,000 tokens a minute. |
+| Escalation tickets | **Done**: `tickets` table, one structured, redacted report per escalation, tenant-scoped API, read-only dashboard at `/dashboard`. |
+| Deployment (Render/Neon/Upstash) | **Not done**: blocked on the owner's accounts. |
+
+Deliberate deviations from the schema above, and why:
+
+- **`evidence_bundles`, `diagnoses`, `actions`, `verifications`** live as JSON
+  columns on the `sessions` row rather than as separate tables. Every write is a
+  change to one session, made in one transaction under the session's state
+  machine; separate tables would add joins and cross-table consistency rules
+  without enabling a query anything needs today. **`tickets`** did get its own
+  table, because a ticket has its own lifecycle (triage status, history) and is
+  listed across sessions.
+- **No Redis `session:{id}` cache.** Its stated purpose — sessions that survive a
+  restart and work across instances — is already met by PostgreSQL being the
+  single source of truth. A second copy would need invalidation on every
+  transition and could serve a stale phase to an approval check; the hot path
+  (one row by primary key) does not need it. Redis is used where shared state
+  across instances is actually required: rate limits and live events.

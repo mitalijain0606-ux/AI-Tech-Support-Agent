@@ -45,6 +45,20 @@ class Settings(BaseSettings):
     # optional precedent, and a hanging download must not slow every cycle.
     embedding_retry_cooldown_seconds: float = 60.0
 
+    # "combined": one grounded diagnose call per cycle (fewest calls — the free
+    # tier is rate limited). "staged": separate Classify, Diagnose and Plan
+    # calls, each scored on its own by eval.py. See staged.py.
+    llm_pipeline: Literal["combined", "staged"] = "combined"
+
+    # A remediation is only proposed when the diagnosis is at least this
+    # confident; below it the session escalates to a human instead of acting
+    # on a guess ("confidence thresholds routing to escalation").
+    min_action_confidence: float = 0.5
+
+    # Approximate token budget for the evidence shown to the model per cycle
+    # (budget.py: filter, dedupe, truncate, prune, redact, then cap).
+    evidence_token_budget: int = 8000
+
     # SQLite by default so this runs with zero external accounts. Any
     # SQLAlchemy URL works; `postgres://` / `postgresql://` URLs (what Neon and
     # Render hand out) are rewritten to the installed psycopg driver.

@@ -111,3 +111,24 @@ class ApiKey(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(UTC))
     last_used_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
+
+
+class Ticket(Base):
+    """An escalated session handed to a human (see tickets.py). One per session.
+    `report` is the structured, redacted escalation bundle; the session row
+    stays the source of truth for the live investigation."""
+
+    __tablename__ = "tickets"
+
+    id = Column(String, primary_key=True)
+    session_id = Column(String, nullable=False, unique=True, index=True)
+    tenant_id = Column(String, nullable=False, index=True)
+    created_by = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="open")  # open | acknowledged | closed
+    resolution_state = Column(String, nullable=True)
+    reason = Column(String, nullable=True)
+    category = Column(String, nullable=True)
+    report = Column(MutableDict.as_mutable(JSON), nullable=False, default=dict)
+    status_history = Column(MutableList.as_mutable(JSON), default=list)
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
+    updated_at = Column(DateTime, default=lambda: datetime.now(UTC))

@@ -20,7 +20,8 @@ fixed five-step checklist once and stop.
 
 ## Phase 0 — Existing system audit
 
-Answered against the actual code as it exists today, not from memory.
+Answered against the code as it existed **before** this redesign (historical:
+the rest of this document, from "As implemented" on, describes what replaced it).
 
 | # | Question | Answer |
 |---|---|---|
@@ -473,18 +474,18 @@ Large enough to need sequencing, same reasoning as the phase docs in
   real investigation cycles (see below), and the limits count cycles,
   collector runs, LLM calls and evidence items instead of phase transitions.
 - [x] **Phase 4 — Progressive evidence collection + NEED_INFORMATION.**
-  Done for *evidence*: the backend issues explicit, bounded evidence
-  requests (collectors `console`, `network`, `storage`, `cookies`, `page`,
-  `reload_observe`), the model can answer "insufficient evidence" with a
-  structured `information_request`, `NEED_INFORMATION` is a real phase
-  with popup UI, and a request may ask the user to reproduce the problem.
-  **Not built:** free-text questions the user answers in words (e.g. "did
-  you just install an extension?") — the loop asks for *evidence*, not
-  for typed answers.
-- [~] **Phase 5 — Activity history.** Partly: every stage appends a
-  secret-free entry to `SupportSession.activity`, and the popup shows the
-  latest entries on the outcome screen. **Not built:** a live event
-  *stream* — the popup still receives state snapshots.
+  Done: the backend issues explicit, bounded evidence requests (collectors
+  `console`, `network`, `storage`, `cookies`, `page`, `reload_observe`), the
+  model can answer "insufficient evidence" with a structured
+  `information_request`, `NEED_INFORMATION` is a real phase with popup UI, and
+  a request may ask the user to reproduce the problem. Free-text questions
+  were added later: an information request may carry one validated question,
+  answered through `POST /api/sessions/{id}/answer` (see below).
+- [x] **Phase 5 — Activity history.** Done: every stage appends a
+  secret-free entry to `SupportSession.activity`, and the same entries (plus
+  stage start/finish events) are streamed live over Server-Sent Events
+  (`GET /api/sessions/{id}/events`), which the popup and the SDK show while
+  a cycle runs.
 
 Phases 1–3 are the core of "not a chatbot anymore." Phases 4–5 are what
 make that visible and interactive rather than just true internally.
@@ -500,6 +501,9 @@ POST /api/sessions/{id}/investigate     one bounded cycle — investigation.py, 
                                         five named stages (stages.PIPELINE_STAGES):
     investigate  evidence: validated against the outstanding request; ids unique
                  per session; provenance (bundle_id, request_id, cycle); budget
+                 + budgeting (budget.py): filter, dedupe, truncate, prune, redact,
+                 cap at EVIDENCE_TOKEN_BUDGET (~8k tokens) — the model sees and
+                 may cite only the budgeted window
                  + understanding: deterministic anomaly summary (evidence.understand)
                  + retrieval: real search each time the evidence changes; recorded as
                  ok / no_match / empty_index / error / skipped_unchanged /
@@ -513,10 +517,13 @@ POST /api/sessions/{id}/investigate     one bounded cycle — investigation.py, 
                  Passed to the model as a hint it may disagree with; also the
                  offline engine's whole decision
     diagnose     LLM (Groq) or the labelled offline "rule_based" engine;
-                 grounding-validated, one regeneration, else ESCALATED
+                 grounding-validated, one regeneration, else ESCALATED.
+                 LLM_PIPELINE=staged splits this into Classify, Diagnose and Plan
+                 model calls (staged.py), each validated; default: one call
     plan         NEED_INFORMATION (new EvidenceRequest, optionally with one
                  validated free-text question)
-                 | ACTION_PROPOSED (planning.build_proposal)
+                 | ACTION_PROPOSED (planning.build_proposal; only at or above
+                   MIN_ACTION_CONFIDENCE, else ESCALATED for a human)
                  | ESCALATED (no safe action, limits, repeats)
 POST /api/sessions/{id}/answer          the user's reply to that question: tripwire-
                                         scanned, redacted, bounded, one per question;
@@ -532,6 +539,10 @@ POST /api/sessions/{id}/verify          provider reports an observation; the bac
                                         retry EvidenceRequest, or ESCALATED
 GET  /api/sessions/{id}/events          Server-Sent Events: every stage start/finish and
                                         activity entry, replayed then live
+GET  /api/tickets[/{id}]                escalation tickets visible to the caller (admin:
+                                        the tenant's; user: their own); read-only
+                                        dashboard at /dashboard
+POST /api/tickets/{id}/status           admin triage: open → acknowledged → closed
 ```
 
 Every session endpoint resolves a principal (API key → tenant, subject, role)
@@ -558,7 +569,14 @@ names the `proposal_id` it is about.
   and issues a `retry` evidence request; the same action with the same
   parameters is never proposed again. `MAX_ACTION_ATTEMPTS` escalates.
 - **Escalation** records `escalation_state` (reason, attempts, last
-  verification, evidence counts, guidance) and never claims resolution.
+  verification, evidence counts, guidance, `ticket_id`) and never claims
+  resolution. In the same transaction it opens one **ticket** per session
+  (`tickets.py`): a structured report built only from what the session already
+  stored (already tripwire-checked and redacted), redacted once more and
+  bounded — user message, evidence, diagnoses, hypotheses, questions, policy
+  decision, approval, attempted actions, verification, phase history and the
+  activity timeline. A support engineer can replay a ticket's page in a
+  disposable local browser with `scripts/reproduce-ticket.mjs`.
 - **Limits** (`loop_driver.py`): 5 investigation cycles, 24 collector
   runs, 12 LLM calls, 300 evidence items, 2 remediation attempts, the same
   evidence request at most twice, 6 retrievals (retrieval is skipped, not

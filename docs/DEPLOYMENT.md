@@ -39,6 +39,10 @@ more than one instance.
   everyone. The schema revision is checked once, at startup, by the production guard.
 - `/docs`, `/redoc` and `/openapi.json` are not served in production (404); they are in
   development.
+- `/dashboard` (the read-only support dashboard) is served in every environment. It is
+  three static files under a strict Content-Security-Policy and contains no data; every
+  ticket it shows is fetched with the viewer's own API key (`/api/tickets`, tenant-scoped).
+  The migration that creates the `tickets` table is `0003`, applied by `alembic upgrade head`.
 - `ENVIRONMENT=production`: the backend refuses to start with
   `AUTH_REQUIRED=false`, a `*` CORS origin, or a database that is behind its
   migrations. It only warns for a missing `REDIS_URL`, SQLite, or no
@@ -56,6 +60,8 @@ the Render dashboard and never committed.
 | `DATABASE_URL` | Neon connection string | `postgresql://…`; run migrations first |
 | `GROQ_API_KEY` | secret | empty → the labelled offline engine, not a model |
 | `GROQ_MODEL`, `GROQ_TIMEOUT_SECONDS` | defaults | |
+| `LLM_PIPELINE` | `combined` | `staged` makes three model calls per cycle (free-tier rate limits) |
+| `MIN_ACTION_CONFIDENCE`, `EVIDENCE_TOKEN_BUDGET` | `0.5`, `8000` | below the threshold a session escalates instead of proposing a fix |
 | `CORS_ALLOW_ORIGINS` | empty | the extension does not need CORS; never `*` |
 | `TRUST_FORWARDED_FOR`, `TRUSTED_PROXY_HOPS` | `true`, `1` | Render's proxy appends the client address |
 | `REDIS_URL` | secret, optional | shared rate limits + live events for >1 instance |

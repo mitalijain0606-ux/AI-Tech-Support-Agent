@@ -98,6 +98,9 @@ jobs:
         run: |
           node --check sdk/operon-sdk.js && node --check sdk/redact.js
           extension/node_modules/.bin/tsc --noEmit --strict --module esnext --moduleResolution bundler --target es2022 --skipLibCheck sdk/operon-sdk.d.ts sdk/redact.d.ts
+      - name: Ticket-reproduction tool unit tests
+        run: node --test scripts/tests/*.test.mjs
+        working-directory: .
       - name: Audit runtime dependencies
         run: npm audit --omit=dev --audit-level=high
 
@@ -150,4 +153,13 @@ jobs:
         working-directory: extension
       - name: Second-app browser E2E (Buggy Cloud, 7 seeded bugs)
         run: npm run e2e:buggy
+        working-directory: extension
+      - name: Buggy Cloud's five screens under every seeded bug
+        run: npm run e2e:screens
+        working-directory: extension
+      - name: Support dashboard (escalation tickets, XSS, isolation)
+        run: npm run e2e:dashboard
+        working-directory: extension
+      - name: Sandbox reproduction of escalated tickets
+        run: npm run e2e:reproduce
         working-directory: extension

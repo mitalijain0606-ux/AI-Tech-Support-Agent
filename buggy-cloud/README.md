@@ -21,10 +21,18 @@ diagnosis lives next to it in `src/bugs.js`:
 | 6 | reports API on another origin sends no CORS header | `network_error`, no action |
 | 7 | a service worker stays registered and the lazy chunk fails | `service_worker_stale` → `unregister_service_worker` |
 
+Screens (hash routes, all rendered from the same loaded data, so a defect shows
+up wherever its data is used): **Overview** `#/`, **Projects** `#/projects`
+(table + total), **Reports** `#/reports`, **Account** `#/account` (account and
+display preferences), **Settings** `#/settings`. The normal UI has no "bug
+button": the scenario switcher is a hidden diagnostics control on Settings,
+shown only with `?diagnostics=1` (each entry resets and switches to one bug).
+`cd extension && npm run e2e:screens` checks every screen under every bug.
+
 Layout: `src/bugs.js` (definitions + expected diagnoses), `src/activate.js`
 (how a bug is switched on; seeded storage is planted once so a fix stays
 fixed), `src/prefs.js` (Intl formatting + the app's own reset handler),
-`src/api.js` (API helpers), `src/mock-data.js`, `src/ui.js` (rendering only),
+`src/api.js` (API helpers), `src/mock-data.js`, `src/ui.js` (rendering and the five screens),
 `src/main.js` (wiring + the Operon SDK registration), `server.mjs` (static
 files, mock API, second origin).
 

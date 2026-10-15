@@ -10,7 +10,7 @@ from operon_backend import db as db_module
 from operon_backend.config import settings
 from operon_backend.db_models import Base
 
-EXPECTED_TABLES = {"sessions", "knowledge_chunks", "api_keys"}
+EXPECTED_TABLES = {"sessions", "knowledge_chunks", "api_keys", "tickets"}
 
 
 @pytest.fixture
@@ -43,6 +43,14 @@ def test_migrations_can_be_undone(sqlite_url):
     db_support.migrate(sqlite_url)
     db_support.migrate(sqlite_url, "base", downgrade=True)
     assert tables(sqlite_url) - {"alembic_version"} == set()
+
+
+def test_tickets_migration_downgrades_to_0002_and_back(sqlite_url):
+    db_support.migrate(sqlite_url)
+    db_support.migrate(sqlite_url, "0002", downgrade=True)
+    assert "tickets" not in tables(sqlite_url)
+    db_support.migrate(sqlite_url)
+    assert "tickets" in tables(sqlite_url)
 
 
 def test_applying_migrations_twice_is_harmless(sqlite_url):
@@ -135,7 +143,9 @@ def test_postgres_migrations_downgrade_cleanly(pg_url):
     engine = create_engine(pg_url)
     with engine.connect() as connection:
         assert "embedding_vec" not in {c["name"] for c in inspect(connection).get_columns("knowledge_chunks")}
-    assert tables(pg_url) >= EXPECTED_TABLES
+    remaining = tables(pg_url)
+    assert remaining >= EXPECTED_TABLES - {"tickets"}  # 0003 is undone, 0001's tables stay
+    assert "tickets" not in remaining
     engine.dispose()
 
 
