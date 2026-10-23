@@ -6,6 +6,7 @@
 
 export const SETTINGS_KEY = "buggycloud_settings";
 export const PREFS_KEY = "buggycloud_prefs";
+export const SEARCH_KEY = "buggycloud_saved_search";
 
 export const BUGS = Object.freeze([
   {
@@ -57,7 +58,27 @@ export const BUGS = Object.freeze([
     symptom: "The reports panel fails with a chunk-loading error.",
     expected: { category: "service_worker_stale", action_id: "unregister_service_worker", params: { scope: "/" }, resolves: true },
   },
+  {
+    id: 8,
+    slug: "corrupt-saved-search",
+    title: "Saved search filters are corrupted",
+    symptom: "Project search is unavailable and an error banner appears.",
+    expected: { category: "storage_corruption", action_id: "clear_storage_key", params: { key: SEARCH_KEY }, resolves: true },
+  },
 ]);
+
+// What a presenter needs to know about each scenario (shown on the demo control panel).
+// `page` is where the symptom is most visible; `cause` is the real underlying fault.
+export const SCENARIO_NOTES = Object.freeze({
+  1: { page: "#/", cause: "The saved settings value in localStorage is not valid JSON.", fix: "Operon clears that one storage key (with your approval).", verify: "The key is gone or parses, and the error is not logged again." },
+  2: { page: "#/account", cause: "The saved time zone is \"Mars/Phobos\", so Intl throws a RangeError.", fix: "Operon asks the app to reset the time zone preference (with your approval).", verify: "Dates format again; the RangeError is gone." },
+  3: { page: "#/account", cause: "The saved currency is \"US\", not an ISO code, so Intl throws.", fix: "Operon asks the app to reset the currency preference (with your approval).", verify: "Prices format again; the RangeError is gone." },
+  4: { page: "#/projects", cause: "The projects API answers 500 (server-side).", fix: "None from the browser: Operon explains and escalates with a ticket.", verify: "—" },
+  5: { page: "#/account", cause: "The account API answers 401: the session expired (server-side).", fix: "None: signing in is the user's step; Operon escalates.", verify: "—" },
+  6: { page: "#/reports", cause: "The reports API on another origin sends no CORS header.", fix: "None from the browser: a server configuration problem; Operon escalates.", verify: "—" },
+  7: { page: "#/reports", cause: "An old service worker stays registered and serves a stale chunk manifest.", fix: "Operon unregisters that service worker (with your approval).", verify: "No worker controls the page and the chunk error is gone." },
+  8: { page: "#/projects", cause: "The saved project-search filters are not valid JSON.", fix: "Operon clears that one storage key (with your approval).", verify: "The key is gone and search works again." },
+});
 
 export function bugById(id) {
   return BUGS.find((b) => b.id === id) ?? null;

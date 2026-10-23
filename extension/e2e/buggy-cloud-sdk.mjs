@@ -29,7 +29,9 @@ const engine = useGroq ? "groq" : "rule_based";
 const pace = () => (useGroq ? new Promise((r) => setTimeout(r, 25_000)) : Promise.resolve());
 const operonCfg = {};
 const app = await startBuggyCloud({ operon: operonCfg });
-const backend = await startBackend({ groq: useGroq, env: { CORS_ALLOW_ORIGINS: app.url } });
+// This suite drives every scenario through one key in about a minute; the per-key rate limit is
+// tested elsewhere (backend test_rate_limit.py), so it is raised for this throwaway backend only.
+const backend = await startBackend({ groq: useGroq, env: { CORS_ALLOW_ORIGINS: app.url, RATE_LIMIT_PER_MINUTE: "600" } });
 Object.assign(operonCfg, { backendUrl: backend.url, token: backend.tokens.user });
 const browser = await chromium.launch({ channel: "chromium", executablePath: process.env.OPERON_E2E_CHROMIUM || undefined, headless: process.env.OPERON_E2E_HEADED !== "1" });
 console.log(`backend ${backend.url} · app ${app.url} (CORS allowed only for that origin) · no extension\n`);

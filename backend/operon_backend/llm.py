@@ -23,6 +23,7 @@ from typing import Any
 import httpx
 
 from operon_backend.config import settings
+from operon_backend.guidance import guidance_problems
 from operon_backend.policy import ACTION_POLICIES, RESETTABLE_PREFERENCES
 from operon_backend.schemas import (
     COLLECTORS,
@@ -171,9 +172,10 @@ def validate_grounding(
     allowed_knowledge_ids: set[str],
     available_collectors: list[str] | tuple[str, ...] = COLLECTORS,
     available_actions: list[str] | tuple[str, ...] = BASE_ACTIONS,
+    knowledge_context: list[dict] | None = None,
 ) -> list[str]:
     """Every reason this answer may not be used as-is. Empty means grounded."""
-    problems: list[str] = []
+    problems: list[str] = guidance_problems(diagnosis.root_cause, diagnosis.reasoning, knowledge_context, diagnosis.knowledge_refs)
     valid_ids = bundle.all_evidence_ids()
 
     hallucinated = sorted(set(diagnosis.evidence_ids) - valid_ids)
@@ -314,6 +316,11 @@ def _rule_based_diagnosis(
         else:
             reason = None
         n = by_id[cited[0]]
+        if reason is None and not hasattr(n, "status"):
+            # Only the app's own console message reports the failed request (no network entry was
+            # collected, e.g. it happened before Operon attached): describe it from that message.
+            reason = f"The app reported a failed request: {getattr(n, 'text', '')[:160]}"
+            return done(c.category, reason, f"{reason}. A server-side error cannot be fixed from the browser.", c.confidence)
         return done(
             c.category,
             reason or f"Network request to {getattr(n, 'url', '')} returned status {getattr(n, 'status', '')}",
@@ -486,7 +493,7 @@ async def run_diagnosis(
             diagnosis.information_request = (
                 diagnosis.information_request.model_copy(update={"collectors": usable}) if usable else None
             )
-        problems = validate_grounding(diagnosis, bundle, allowed_knowledge, available_collectors, available_actions)
+        problems = validate_grounding(diagnosis, bundle, allowed_knowledge, available_collectors, available_actions, knowledge_context)
         if problems:  # a bug in the rule engine must fail safe too
             raise UngroundedDiagnosis(problems, llm_calls=0)
         return DiagnosisRun(diagnosis=diagnosis, llm_calls=0, engine="rule_based")
@@ -522,7 +529,7 @@ async def run_diagnosis(
         except (ValueError, TypeError, AttributeError) as e:  # bad JSON / not an object / schema violation
             problems = [f"Answer was not valid JSON for the schema: {type(e).__name__}: {str(e)[:200]}"]
         else:
-            problems = validate_grounding(diagnosis, bundle, allowed_knowledge, available_collectors, available_actions)
+            problems = validate_grounding(diagnosis, bundle, allowed_knowledge, available_collectors, available_actions, knowledge_context)
             if not problems:
                 return DiagnosisRun(
                     diagnosis=diagnosis.model_copy(update={"engine": "groq"}),
@@ -610,7 +617,7 @@ async def _run_staged(
         else:
             # Planning belongs to the next stage: an action here is discarded, not trusted.
             candidate = candidate.model_copy(update={"proposed_action": None, "resolvable_automatically": False})
-            problems = validate_grounding(candidate, bundle, allowed_knowledge, available_collectors, available_actions)
+            problems = validate_grounding(candidate, bundle, allowed_knowledge, available_collectors, available_actions, knowledge_context)
             if not problems:
                 diagnosis = candidate
                 break
@@ -638,7 +645,7 @@ async def _run_staged(
             problems = [f"Plan was not valid JSON for the schema: {type(e).__name__}: {str(e)[:200]}"]
         else:
             merged = diagnosis.model_copy(update={"proposed_action": action, "resolvable_automatically": bool(action) and auto})
-            problems = validate_grounding(merged, bundle, allowed_knowledge, available_collectors, available_actions)
+            problems = validate_grounding(merged, bundle, allowed_knowledge, available_collectors, available_actions, knowledge_context)
             if not problems:
                 stages["plan"] = {"skipped": False, "proposed_action": action.model_dump() if action else None}
                 return DiagnosisRun(diagnosis=merged.model_copy(update={"engine": "groq"}), llm_calls=calls, engine="groq",

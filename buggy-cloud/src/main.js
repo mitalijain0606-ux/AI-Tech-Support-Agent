@@ -1,7 +1,7 @@
 import { registerOperon } from "/sdk/operon-sdk.js";
-import { activeBug, ensureStaleWorker, resetScenario, seedBug, wantsReset } from "./activate.js";
+import { activeBug, ensureStaleWorker, resetScenario, seedBug, switchesScenario, wantsReset } from "./activate.js";
 import { createApi } from "./api.js";
-import { PREFS_KEY, SETTINGS_KEY } from "./bugs.js";
+import { PREFS_KEY, SEARCH_KEY, SETTINGS_KEY } from "./bugs.js";
 import { mountOperon } from "./operon-panel.js";
 import { DEFAULT_PREFS, loadPrefs, resetPreference } from "./prefs.js";
 import { render } from "./ui.js";
@@ -15,13 +15,29 @@ if (wantsReset(location.search)) {
   clean.delete("reset");
   history.replaceState(null, "", `${location.pathname}${clean.toString() ? `?${clean}` : ""}${location.hash}`);
 }
+// Opening a different scenario than the one planted in this browser starts from a clean slate,
+// so one scenario's planted value never shows up in another's demo.
+if (switchesScenario(bug, localStorage)) await resetScenario(localStorage);
 seedBug(bug, localStorage);
+
+const NOTIFY_KEY = "nexadesk_notifications";
+const DEFAULT_NOTIFY = { email: true, risk: true, reports: false };
+function readNotify() {
+  try {
+    return { ...DEFAULT_NOTIFY, ...JSON.parse(localStorage.getItem(NOTIFY_KEY) ?? "{}") };
+  } catch {
+    return { ...DEFAULT_NOTIFY };
+  }
+}
 
 const api = createApi({ reportsBase: document.querySelector('meta[name="reports-api"]')?.content ?? "", bug });
 
 async function load() {
   const errors = [];
-  const state = { projects: null, account: null, reports: null, prefs: { ...DEFAULT_PREFS }, errors, bug, settingsOk: true, diagnostics: showDiagnostics };
+  const state = {
+    projects: null, account: null, reports: null, prefs: { ...DEFAULT_PREFS }, errors, bug, settingsOk: true, diagnostics: showDiagnostics,
+    search: { text: "", status: "all" }, notificationPrefs: readNotify(), operonAvailable: Boolean(operonClient), actions,
+  };
   const fail = (what, err) => {
     console.error(`${what}: ${err.name === "Error" ? "" : `${err.name}: `}${err.message}`);
     errors.push(`${what}.`);
@@ -39,6 +55,14 @@ async function load() {
   } catch (err) {
     state.settingsOk = false;
     fail(`Failed to load saved settings (${SETTINGS_KEY})`, err);
+  }
+  try {
+    // The project search remembers its last filter. Unreadable saved filters disable search (bug 8).
+    const saved = localStorage.getItem(SEARCH_KEY);
+    if (saved !== null) state.search = { text: "", status: "all", ...JSON.parse(saved) };
+  } catch (err) {
+    state.search = null;
+    fail(`Failed to load saved search filters (${SEARCH_KEY})`, err);
   }
   try {
     state.prefs = loadPrefs(localStorage, PREFS_KEY);
@@ -74,6 +98,36 @@ async function paint() {
   lastState = await load();
   render(root, lastState, location.hash || "#/");
 }
+
+// What the screens may change: the user's own settings. Each writes real app state.
+const actions = {
+  search(filters) {
+    localStorage.setItem(SEARCH_KEY, JSON.stringify({ text: String(filters.text ?? "").slice(0, 100), status: filters.status }));
+    lastState.search = { ...filters };
+    const focus = document.activeElement?.id;
+    render(root, lastState, location.hash || "#/");
+    if (focus) document.getElementById(focus)?.focus();
+  },
+  notify(key, on) {
+    localStorage.setItem(NOTIFY_KEY, JSON.stringify({ ...readNotify(), [key]: on }));
+    lastState.notificationPrefs = readNotify();
+  },
+  async savePrefs(changes) {
+    let current = {};
+    try {
+      current = JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") ?? {};
+    } catch {
+      current = {};
+    }
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ ...DEFAULT_PREFS, ...current, ...changes }));
+    await paint();
+    lastState.prefsSaved = true;
+    render(root, lastState, location.hash || "#/");
+  },
+  openOperon() {
+    window.dispatchEvent(new CustomEvent("operon:open"));
+  },
+};
 
 // Switching screens re-renders the loaded state; it does not re-fetch.
 window.addEventListener("hashchange", () => {

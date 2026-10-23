@@ -565,6 +565,32 @@ export function init(config) {
       });
     },
 
+    /**
+     * Pick up an investigation this page started before a reload (the app keeps only the session
+     * id, e.g. in sessionStorage). Reads the backend's own state and returns it like diagnose():
+     * a pending proposal can then be decided with decide(). Never collects evidence or runs
+     * anything by itself. If the page reloaded while an approved fix was running, nobody knows
+     * whether it finished, so that is reported to the backend as interrupted — never as success —
+     * and the backend decides what happens next (retry or escalation).
+     */
+    resume(sessionId, { signal } = {}) {
+      return exclusive(async () => {
+        const id = String(sessionId ?? "");
+        if (!/^[A-Za-z0-9_-]{1,64}$/.test(id)) throw new OperonError("config_invalid", "resume() needs a session id");
+        const base = `/api/sessions/${encodeURIComponent(id)}`;
+        let current = asSession(await request("GET", base, undefined, { signal }), id);
+        const pending = current.pending_action;
+        if (current.phase === "EXECUTING" && pending) {
+          current = asSession(await request("POST", `${base}/action-result`, { action_id: pending.action_id, succeeded: false, detail: "interrupted: the page reloaded before the fix reported its result" }, { signal }), id);
+        } else if (current.phase === "VERIFYING" && pending) {
+          current = asSession(await request("POST", `${base}/verify`, { action_id: pending.action_id, observation: { console: [], network: [], error: "interrupted: the page reloaded before verification" } }, { signal }), id);
+        }
+        session = current;
+        emit("state", publicResult(current));
+        return publicResult(current);
+      });
+    },
+
     /** Answer the backend's free-text question (redacted before it is sent). */
     answer(text, { signal } = {}) {
       return exclusive(async () => {

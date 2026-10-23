@@ -75,6 +75,13 @@ class SessionRecord(Base):
     approval = Column(MutableDict.as_mutable(JSON), nullable=True)
     activity = Column(MutableList.as_mutable(JSON), default=list)
 
+    # Optimistic concurrency: every UPDATE is conditional on the version it read. Two requests that
+    # change the same session at the same time can no longer both "succeed" with the later one
+    # silently overwriting the earlier (a lost update); the second gets a conflict (409) instead.
+    version = Column(Integer, nullable=False, default=0, server_default="0")
+
+    __mapper_args__ = {"version_id_col": version}
+
 
 class KnowledgeChunk(Base):
     """The RAG store from production-architecture.md. `embedding` is a

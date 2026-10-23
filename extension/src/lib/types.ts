@@ -311,6 +311,8 @@ export interface ExtensionState {
   progress?: ProgressLine[];
   // Whether an access token is saved (never the token itself).
   tokenSet?: boolean;
+  // The site the current investigation is bound to (its tab's origin), if one is running.
+  targetOrigin?: string | null;
 }
 
 export type PopupCommand =

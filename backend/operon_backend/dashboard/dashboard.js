@@ -156,36 +156,69 @@
     }
   }
 
+  let allTickets = [];
+
+  function showRows() {
+    const status = $("status-filter").value;
+    const query = $("search").value.trim().toLowerCase();
+    const body = $("tickets");
+    const rows = allTickets.filter((t) =>
+      (!status || t.status === status) &&
+      (!query || [t.ticket_id, t.reason, t.category, t.user_message, t.resolution_state].some((v) => String(v || "").toLowerCase().includes(query))));
+    body.replaceChildren();
+    for (const t of rows) {
+      const row = el("tr", { tabindex: "0" },
+        el("td", {}, text(t.created_at)),
+        el("td", {}, el("span", { class: "badge " + text(t.status) }, text(t.status))),
+        el("td", {}, text(t.resolution_state)),
+        el("td", {}, text(t.category)),
+        el("td", {}, text(t.user_message)));
+      row.addEventListener("click", () => openTicket(t.ticket_id, row));
+      row.addEventListener("keydown", (e) => { if (e.key === "Enter") openTicket(t.ticket_id, row); });
+      body.append(row);
+    }
+    $("empty").hidden = rows.length > 0 || allTickets.length === 0;
+    return rows.length;
+  }
+
+  function showStats() {
+    // Counts of what this key can actually see — computed from the tickets the API returned.
+    const count = (s) => allTickets.filter((t) => t.status === s).length;
+    $("stat-open").textContent = String(count("open"));
+    $("stat-acknowledged").textContent = String(count("acknowledged"));
+    $("stat-closed").textContent = String(count("closed"));
+    $("stat-total").textContent = allTickets.length >= 200 ? "200+" : String(allTickets.length);
+    $("stats").hidden = false;
+  }
+
   async function loadTickets() {
     apiKey = $("api-key").value.trim();
-    const status = $("status-filter").value;
-    const body = $("tickets");
     try {
       setMessage("Loading…");
-      const query = status ? "?status=" + encodeURIComponent(status) : "";
-      const data = await api("/api/tickets" + query);
-      body.replaceChildren();
+      const data = await api("/api/tickets?limit=200");
+      allTickets = data.tickets || [];
       $("detail").hidden = true;
-      for (const t of data.tickets || []) {
-        const row = el("tr", { tabindex: "0" },
-          el("td", {}, text(t.created_at)),
-          el("td", {}, el("span", { class: "badge" }, text(t.status))),
-          el("td", {}, text(t.resolution_state)),
-          el("td", {}, text(t.category)),
-          el("td", {}, text(t.user_message)));
-        row.addEventListener("click", () => openTicket(t.ticket_id, row));
-        row.addEventListener("keydown", (e) => { if (e.key === "Enter") openTicket(t.ticket_id, row); });
-        body.append(row);
-      }
-      setMessage((data.tickets || []).length + " ticket(s)");
+      showStats();
+      const shown = showRows();
+      setMessage(shown + " ticket(s)" + (shown !== allTickets.length ? " of " + allTickets.length : ""));
     } catch (error) {
-      body.replaceChildren();
+      allTickets = [];
+      $("tickets").replaceChildren();
+      $("stats").hidden = true;
       setMessage("Could not load tickets: " + error.message, true);
     }
   }
 
+  function refilter() {
+    if (!allTickets.length && !apiKey) return;
+    const shown = showRows();
+    setMessage(shown + " ticket(s)" + (shown !== allTickets.length ? " of " + allTickets.length : ""));
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     $("load").addEventListener("click", loadTickets);
+    $("status-filter").addEventListener("change", refilter);
+    $("search").addEventListener("input", refilter);
     $("api-key").addEventListener("keydown", (e) => { if (e.key === "Enter") loadTickets(); });
   });
 })();

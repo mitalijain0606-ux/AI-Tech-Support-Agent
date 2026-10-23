@@ -46,6 +46,12 @@ try {
   check("a teammate (same tenant, not admin) does not see another user's ticket", (await load(backend.tokens.teammate)) === 0);
   check("the session's own user sees their ticket", (await load(backend.tokens.user)) === 1);
   check("the tenant admin sees it", (await load(backend.tokens.admin)) === 1);
+  check("the counts come from the backend's tickets (1 open, 1 total for this tenant)", (await page.textContent("#stat-open")) === "1" && (await page.textContent("#stat-total")) === "1");
+  await page.fill("#search", "no-such-ticket-text");
+  check("search filters the list (no match)", (await page.locator("#tickets tr").count()) === 0 && !(await page.locator("#empty").isHidden()));
+  await page.fill("#search", ticketId.slice(0, 10));
+  check("search by ticket id finds it", (await page.locator("#tickets tr").count()) === 1);
+  await page.fill("#search", "");
 
   await page.locator("#tickets tr").first().click();
   await page.locator("#detail h2").first().waitFor();

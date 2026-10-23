@@ -59,6 +59,11 @@ const MAX_AUTO_CYCLES = 6;
 const RELOAD_TIMEOUT_MS = 30_000;
 
 let state: ExtensionState = { phase: "idle" };
+// The tab an investigation is about, fixed when it starts. Every later step — more evidence, the
+// approved action, its verification — runs on THIS tab and only while it still shows the same site,
+// never on whatever tab happens to be active by then (that would collect another page's evidence,
+// run the fix there, and could "verify" a problem away that was never on that page).
+let target: { tabId: number; origin: string } | null = null;
 const ports = new Set<chrome.runtime.Port>();
 let autoCycles = 0;
 
@@ -77,9 +82,10 @@ readToken().then((t) => {
 const restored: Promise<void> = chrome.storage.session
   .get(STATE_KEY)
   .then((items) => {
-    const saved = items[STATE_KEY] as { state: ExtensionState; nextEvidenceId: number } | undefined;
+    const saved = items[STATE_KEY] as { state: ExtensionState; nextEvidenceId: number; target?: typeof target } | undefined;
     if (!saved) return;
     nextEvidenceId = saved.nextEvidenceId;
+    target = saved.target ?? null;
     state = saved.state;
     interruptedMidStep = BUSY_PHASES.has(saved.state.phase);
   })
@@ -88,7 +94,7 @@ const restored: Promise<void> = chrome.storage.session
   });
 
 function setState(next: ExtensionState) {
-  state = { ...next, tokenSet };
+  state = { ...next, tokenSet, targetOrigin: target?.origin ?? null };
   for (const port of ports) {
     try {
       port.postMessage(state);
@@ -96,7 +102,7 @@ function setState(next: ExtensionState) {
       ports.delete(port);
     }
   }
-  chrome.storage.session.set({ [STATE_KEY]: { state, nextEvidenceId } }).catch(() => {});
+  chrome.storage.session.set({ [STATE_KEY]: { state, nextEvidenceId, target } }).catch(() => {});
 }
 
 // ---- Live progress (Server-Sent Events) --------------------------------------------------
@@ -170,6 +176,31 @@ async function getActiveTab(): Promise<chrome.tabs.Tab> {
   // content scripts or debugging; say so up front instead of failing halfway through.
   if (!/^https?:\/\//i.test(tab.url) || /^https:\/\/(chrome\.google\.com\/webstore|chromewebstore\.google\.com)\//i.test(tab.url)) {
     throw new Error(`Operon can't investigate this kind of page (${tab.url.split(":")[0]}:). Open the website you want help with in this tab, then try again.`);
+  }
+  return tab;
+}
+
+function originOf(url: string | undefined): string {
+  try {
+    return new URL(url ?? "").origin;
+  } catch {
+    return "";
+  }
+}
+
+// The investigation's own tab, re-read now. Refuses — so nothing is collected or run — when that tab
+// was closed or now shows a different site.
+async function targetTab(): Promise<chrome.tabs.Tab> {
+  if (!target) throw new Error("This investigation is not tied to a tab any more. Reset, then ask again on the page you need help with.");
+  let tab: chrome.tabs.Tab;
+  try {
+    tab = await chrome.tabs.get(target.tabId);
+  } catch {
+    throw new Error("The tab this investigation is about was closed, so nothing was run. Reset, then ask again on that page.");
+  }
+  const origin = originOf(tab.url);
+  if (origin !== target.origin) {
+    throw new Error(`The investigated tab now shows a different site (${origin || "unknown"}) instead of ${target.origin}, so nothing was run. Go back to that page, or reset and ask again.`);
   }
   return tab;
 }
@@ -897,6 +928,7 @@ async function handleCommand(command: PopupCommand) {
       // Local state first: the active tab may be one the content script can't
       // reach (outside the target, or stale), and that must never leave the
       // popup stuck on an error screen.
+      target = null;
       setState({ phase: "idle" });
       try {
         const tab = await getActiveTab();
@@ -909,6 +941,7 @@ async function handleCommand(command: PopupCommand) {
 
     case "ASK_OPERON": {
       const tab = await getActiveTab();
+      target = { tabId: tab.id!, origin: originOf(tab.url) };
       nextEvidenceId = 1;
       const session = await createBackendSession(command.message, await providerCapabilities(tab));
       if (session.phase !== "UNDERSTANDING") return render(session, null);
@@ -922,7 +955,7 @@ async function handleCommand(command: PopupCommand) {
       if (state.phase !== "needs_more_evidence" || !session) return;
       const current = await fetchSession(session.session_id);
       if (current.phase !== "NEED_INFORMATION" && current.phase !== "UNDERSTANDING") return render(current, state.diagnosis ?? null);
-      const tab = await getActiveTab();
+      const tab = await targetTab();
       await investigateCycle(tab, current);
       return;
     }
@@ -945,7 +978,7 @@ async function handleCommand(command: PopupCommand) {
     case "APPROVE": {
       const { session, diagnosis, policy } = state;
       if (state.phase !== "awaiting_approval" || !session) return;
-      const tab = await getActiveTab();
+      const tab = await targetTab(); // before the approval is recorded: a refusal leaves nothing approved
       const next = await recordApproval(session.session_id, true, session.pending_action?.proposal_id);
       await advance(tab, next, diagnosis ?? null, policy);
       return;

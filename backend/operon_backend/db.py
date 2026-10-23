@@ -24,7 +24,8 @@ def _add_missing_columns() -> None:
             for column in table.columns:
                 if column.name not in existing:
                     column_type = column.type.compile(dialect=engine.dialect)
-                    conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{column.name}" {column_type}'))
+                    default = f" NOT NULL DEFAULT {column.server_default.arg}" if column.server_default is not None else ""
+                    conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{column.name}" {column_type}{default}'))
 
 
 def alembic_config():

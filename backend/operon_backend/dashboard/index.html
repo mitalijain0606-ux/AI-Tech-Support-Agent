@@ -4,38 +4,54 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title>Operon Tickets</title>
+  <title>Operon Support Console</title>
   <link rel="stylesheet" href="/dashboard/dashboard.css">
   <script src="/dashboard/dashboard.js" defer></script>
 </head>
 <body>
-  <header>
-    <h1>Operon · Escalation tickets</h1>
-    <p class="muted">Read-only. Everything shown here is the redacted report Operon stored when it handed a session to a human.</p>
+  <header class="top">
+    <div class="brand"><span class="mark">O</span><div><strong>Operon</strong><span>Support console</span></div></div>
+    <p class="muted">Read-only view of the investigations Operon handed to a person. Every value comes from the backend; nothing here can change a ticket or a customer's browser.</p>
   </header>
-  <section class="controls" aria-label="Connection">
-    <label>API key
-      <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="opk_… (kept in this tab's memory only)">
-    </label>
-    <label>Status
-      <select id="status-filter">
-        <option value="">any</option>
-        <option value="open" selected>open</option>
-        <option value="acknowledged">acknowledged</option>
-        <option value="closed">closed</option>
-      </select>
-    </label>
-    <button id="load" type="button">Load tickets</button>
-    <span id="message" role="status" class="muted"></span>
-  </section>
-  <main>
-    <section aria-label="Tickets" class="list">
-      <table>
-        <thead><tr><th>Opened</th><th>Status</th><th>Reason</th><th>Category</th><th>User message</th></tr></thead>
-        <tbody id="tickets"></tbody>
-      </table>
+  <div class="wrap">
+    <section class="card controls" aria-label="Connection">
+      <label class="field grow">API key
+        <input id="api-key" type="password" autocomplete="off" spellcheck="false" placeholder="opk_… (kept in this tab's memory only)">
+      </label>
+      <button id="load" type="button" class="primary">Load tickets</button>
+      <span id="message" role="status" class="muted"></span>
     </section>
-    <section aria-label="Ticket detail" id="detail" class="detail" hidden></section>
-  </main>
+    <section id="stats" class="stats" aria-label="Ticket counts" hidden>
+      <div class="stat"><span class="label">Open</span><span class="value" id="stat-open">—</span></div>
+      <div class="stat"><span class="label">Acknowledged</span><span class="value" id="stat-acknowledged">—</span></div>
+      <div class="stat"><span class="label">Closed</span><span class="value" id="stat-closed">—</span></div>
+      <div class="stat"><span class="label">Total visible to this key</span><span class="value" id="stat-total">—</span></div>
+    </section>
+    <main>
+      <section aria-label="Tickets" class="card list">
+        <div class="filters">
+          <label class="field">Status
+            <select id="status-filter">
+              <option value="">Any</option>
+              <option value="open" selected>Open</option>
+              <option value="acknowledged">Acknowledged</option>
+              <option value="closed">Closed</option>
+            </select>
+          </label>
+          <label class="field grow">Search
+            <input id="search" type="search" placeholder="Ticket, reason, category or message" autocomplete="off">
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Opened</th><th>Status</th><th>Reason</th><th>Category</th><th>User message</th></tr></thead>
+            <tbody id="tickets"></tbody>
+          </table>
+        </div>
+        <p id="empty" class="empty" hidden>No tickets match.</p>
+      </section>
+      <section aria-label="Ticket detail" id="detail" class="card detail" hidden></section>
+    </main>
+  </div>
 </body>
 </html>

@@ -80,6 +80,8 @@ export interface OperonClient {
   on(event: "activity", handler: (a: { kind: string; summary: string }) => void): () => void;
   diagnose(issue: string, options?: { signal?: AbortSignal }): Promise<OperonResult>;
   continue(options?: { signal?: AbortSignal }): Promise<OperonResult>;
+  /** Re-attach to an investigation started before a page reload (keep only its id). Runs nothing. */
+  resume(sessionId: string, options?: { signal?: AbortSignal }): Promise<OperonResult>;
   answer(text: string, options?: { signal?: AbortSignal }): Promise<OperonResult>;
   decide(approve: boolean, options?: { signal?: AbortSignal }): Promise<OperonDecision>;
   dispose(): void;

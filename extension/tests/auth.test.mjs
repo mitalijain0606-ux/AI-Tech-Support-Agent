@@ -113,7 +113,7 @@ test("a free-text answer goes to the backend for the open question, and only the
   const req = evidenceRequest({ collectors: ["console"], question: "What did you click last?" });
   const asking = session("NEED_INFORMATION", { evidence_request: req });
   const world = await createWorld({
-    initialStorage: { operon_state: { state: { phase: "needs_more_evidence", session: asking, diagnosis: null }, nextEvidenceId: 10 } },
+    initialStorage: { operon_state: { state: { phase: "needs_more_evidence", session: asking, diagnosis: null }, nextEvidenceId: 10, target: { tabId: 5, origin: "https://github.com" } } },
     backend: (method, path) => (path.endsWith("/answer") ? session("NEED_INFORMATION", { evidence_request: req, diagnostic_steps: [{ request_id: req.request_id, answer: "x" }] }) : { status: 404, body: {} }),
   }).load();
   const popup = world.connect();
@@ -128,7 +128,7 @@ test("a free-text answer goes to the backend for the open question, and only the
 test("an answer is ignored when no question is open", async () => {
   const asking = session("NEED_INFORMATION", { evidence_request: evidenceRequest({ collectors: ["console"] }) });
   const world = await createWorld({
-    initialStorage: { operon_state: { state: { phase: "needs_more_evidence", session: asking, diagnosis: null }, nextEvidenceId: 10 } },
+    initialStorage: { operon_state: { state: { phase: "needs_more_evidence", session: asking, diagnosis: null }, nextEvidenceId: 10, target: { tabId: 5, origin: "https://github.com" } } },
     backend: () => ({ status: 404, body: {} }),
   }).load();
   const popup = world.connect();

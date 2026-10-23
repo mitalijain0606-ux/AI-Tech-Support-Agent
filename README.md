@@ -13,10 +13,11 @@ reproducible bug, so the demo plants one itself: a namespaced, corrupted
 Everything downstream is genuine: real `chrome.debugger` capture, a real
 policy gate, a real fix in the live tab, and a real re-observation.
 
-A second application, [`buggy-cloud/`](buggy-cloud/), shows it is not
-GitHub-only: seven seeded bugs (`?bug=N`), an app-specific fix
-(`reset_user_preference`) through the Operon SDK ([`sdk/`](sdk/)) — usable either
-directly by the app (`init`) or carried by the extension — and end-to-end tests of both paths. What exists, what is verified and what is left:
+The main demo target is **NexaDesk** ([`buggy-cloud/`](buggy-cloud/)), a realistic SaaS app with
+eight reproducible faults, a presenter **demo console** (`/demo`) and the Operon **support widget**
+built on the SDK ([`sdk/`](sdk/)); the same scenarios also run through the extension. **Running the
+demo: [`docs/HACKATHON_DEMO_GUIDE.md`](docs/HACKATHON_DEMO_GUIDE.md).** What exists, what is verified
+and what is left: [`docs/FEATURE_AUDIT_REPORT.md`](docs/FEATURE_AUDIT_REPORT.md) and
 [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md).
 
 Planning and phase tracking live in [`docs/`](docs/). How every part is
@@ -108,7 +109,7 @@ render.yaml, .github/    deployment blueprint (never deployed) and CI (never run
 ```bash
 cd backend && python3 -m venv .venv && . .venv/bin/activate && pip install --require-hashes -r requirements.txt && cd ..
 cd extension && npm ci && cd ..
-node scripts/dev-local.mjs        # backend + Buggy Cloud + SDK panel; prints your token and the Chrome steps
+node scripts/dev-local.mjs        # backend + NexaDesk + support widget + demo console; prints URLs, tokens and the Chrome steps
 ```
 
 Full guide, ports, Chrome instructions and troubleshooting: [`docs/LOCAL_DEVELOPMENT.md`](docs/LOCAL_DEVELOPMENT.md).
@@ -133,6 +134,7 @@ curl localhost:8000/health        # {"status":"ok"}
 | `GROQ_TIMEOUT_SECONDS` | `30` | per-request timeout |
 | `LLM_PIPELINE` | `combined` | `staged` runs Classify, Diagnose and Plan as three model calls (more calls, per-stage scoring in `eval.py`) |
 | `MIN_ACTION_CONFIDENCE` | `0.5` | a diagnosis less confident than this escalates to a human instead of proposing a fix |
+| `MAX_REQUEST_BODY_BYTES` | `2000000` | larger request bodies are refused with 413 before they are read |
 | `EVIDENCE_TOKEN_BUDGET` | `8000` | approximate token cap on the evidence shown to the model per cycle |
 | `EMBEDDING_RETRY_COOLDOWN_SECONDS` | `60` | after the embedding model fails to load, how long before trying again |
 | `DATABASE_URL` | `sqlite:///./operon.db` | any SQLAlchemy URL; for Postgres run `alembic upgrade head` first |
@@ -188,7 +190,8 @@ npm run e2e:buggy                       # the second app through the extension: 
 npm run e2e:sdk                         # the same app through the SDK (no extension)
 npm run e2e:sdk-wire                    # SDK request bytes: fake secrets must not appear
 npm run e2e:wire                        # fake secrets typed into the popup never reach the network (recording proxy)
-npm run e2e:screens                     # Buggy Cloud's five screens under every seeded bug
+npm run e2e:journey                     # the hackathon demo journey through the SDK widget AND the extension
+npm run e2e:screens                     # NexaDesk's screens under every seeded scenario
 npm run e2e:dashboard                   # escalation tickets in the read-only support dashboard (XSS, isolation)
 npm run e2e:reproduce                   # sandbox reproduction of escalated tickets
 npm run e2e:github-escalation           # real 404 / 401 from github.com escalate with a ticket

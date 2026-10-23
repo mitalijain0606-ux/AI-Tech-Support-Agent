@@ -40,11 +40,18 @@ export async function startBuggyCloud({ port = 0, host = "127.0.0.1", operon = n
     const url = new URL(req.url, "http://x");
     const bug = bugOf(url);
     if (url.pathname === "/api/projects") return bug === 4 ? json(res, 500, { error: "internal error" }) : json(res, 200, { projects: PROJECTS });
-    if (url.pathname === "/operon-config.json") return operon ? json(res, 200, operon) : json(res, 404, { error: "Operon is not configured" });
+    // Not configured is an expected answer, not a failure: 204, so the page's optional check never
+    // shows up as a failed request (Operon would otherwise see a 404 it did not cause).
+    if (url.pathname === "/operon-config.json") {
+      if (operon) return json(res, 200, operon);
+      res.writeHead(204, { "cache-control": "no-store" });
+      return res.end();
+    }
     if (url.pathname === "/api/me") return bug === 5 ? json(res, 401, { error: "session expired" }) : json(res, 200, ACCOUNT);
 
     const file =
       url.pathname === "/" ? path.join(HERE, "index.html")
+      : url.pathname === "/demo" ? path.join(HERE, "demo.html")
       : url.pathname.startsWith("/sdk/dist/") ? path.join(SDK, "dist", path.basename(url.pathname))
       : url.pathname.startsWith("/sdk/examples/") ? path.join(SDK, "examples", path.basename(url.pathname))
       : url.pathname.startsWith("/sdk/") ? path.join(SDK, path.basename(url.pathname))

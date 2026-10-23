@@ -88,6 +88,7 @@ integration is [`buggy-cloud/src/operon-panel.js`](../buggy-cloud/src/operon-pan
 |---|---|
 | `diagnose(issue, {signal})` | Creates a session, collects the evidence the backend asks for, investigates (≤ `maxCycles`). Resolves `{state, session, proposal, question}`; `state` ∈ `proposal` · `needs_answer` · `needs_evidence` · `escalated` · `resolved` · `declined` · `in_progress` |
 | `answer(text)` / `continue()` | Answer the backend's free-text question (redacted first), then continue |
+| `resume(sessionId)` | Re-attach after a page reload. Keep only the session id (e.g. in `sessionStorage`); `resume` reads the backend's state and returns it like `diagnose()` — a pending proposal can then be decided. It never collects evidence or runs anything; a reload while an approved fix was running is reported to the backend as **interrupted** (never as success) |
 | `decide(true \| false)` | Policy check → approval (bound to the proposal id) → the one approved action → result → verification. `false` records the rejection and **runs nothing**. Resolves `{executed, reason, verification, …}` |
 | `on("state" \| "progress" \| "activity", fn)` | Listeners; returns an unsubscribe function. A throwing listener cannot break the SDK |
 | `dispose()` | Idempotent. Aborts in-flight requests, restores `console`/`fetch`, drops listeners |

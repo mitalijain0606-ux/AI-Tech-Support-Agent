@@ -42,7 +42,8 @@ more than one instance.
 - `/dashboard` (the read-only support dashboard) is served in every environment. It is
   three static files under a strict Content-Security-Policy and contains no data; every
   ticket it shows is fetched with the viewer's own API key (`/api/tickets`, tenant-scoped).
-  The migration that creates the `tickets` table is `0003`, applied by `alembic upgrade head`.
+  The migration that creates the `tickets` table is `0003`, applied by `alembic upgrade head`;
+  `0004` adds `sessions.version` (optimistic locking: a concurrent conflicting update gets 409).
 - `ENVIRONMENT=production`: the backend refuses to start with
   `AUTH_REQUIRED=false`, a `*` CORS origin, or a database that is behind its
   migrations. It only warns for a missing `REDIS_URL`, SQLite, or no

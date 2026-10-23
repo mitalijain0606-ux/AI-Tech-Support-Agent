@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session as DBSession
+from sqlalchemy.orm.exc import StaleDataError
 
 from sqlalchemy import text
 
@@ -122,8 +123,64 @@ def configure_cors(target: FastAPI, origins: list[str]) -> None:
     )
 
 
+class _BodyTooLarge(Exception):
+    pass
+
+
+class BodySizeLimitMiddleware:
+    """Refuses a request body larger than `max_bytes` with 413 — by its Content-Length before
+    anything is read, or as soon as the streamed body passes the limit. Pure ASGI."""
+
+    def __init__(self, app, max_bytes: int):
+        self.app, self.max_bytes = app, max_bytes
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        length = dict(scope.get("headers") or []).get(b"content-length", b"")
+        if length.isdigit() and int(length) > self.max_bytes:
+            return await self._refuse(send)
+        received = 0
+        started = False
+
+        async def limited_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _BodyTooLarge()
+            return message
+
+        async def tracking_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracking_send)
+        except _BodyTooLarge:
+            if not started:
+                await self._refuse(send)
+
+    async def _refuse(self, send):
+        body = b'{"detail":"Request body too large"}'
+        await send({"type": "http.response.start", "status": 413,
+                    "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
+        await send({"type": "http.response.body", "body": body})
+
+
 configure_cors(app, settings.cors_origins)
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes)
 app.add_middleware(RequestLogMiddleware)
+
+
+@app.exception_handler(StaleDataError)
+async def concurrent_update_handler(request: Request, exc: StaleDataError):
+    """Two requests changed the same session at the same time; this one lost the race and nothing
+    it did was saved. The client re-reads the session and decides again."""
+    return JSONResponse(status_code=409, content={"detail": "The session was changed by another request at the same time; nothing from this request was saved. Reload the session and try again."})
 
 
 @app.get("/health")

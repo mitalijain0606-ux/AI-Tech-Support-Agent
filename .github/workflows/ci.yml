@@ -163,3 +163,6 @@ jobs:
       - name: Sandbox reproduction of escalated tickets
         run: npm run e2e:reproduce
         working-directory: extension
+      - name: Demo journey through the SDK widget and the extension (NexaDesk)
+        run: npm run e2e:journey
+        working-directory: extension

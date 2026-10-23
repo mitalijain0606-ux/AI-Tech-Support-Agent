@@ -109,6 +109,10 @@ const backendEnv = {
   ENVIRONMENT: "development",
   AUTH_REQUIRED: "true", // authentication stays ON locally: the demo uses real keys
   CORS_ALLOW_ORIGINS: `http://127.0.0.1:${appPort}`, // exactly the demo site, nothing else
+  // One local demo key drives every scenario through the widget and the extension; the default
+  // per-key limit (120/min) is meant for production traffic. Local stack only.
+  RATE_LIMIT_PER_MINUTE: "600",
+  RATE_LIMIT_LLM_PER_MINUTE: "120", // investigations; with --groq, Groq's own free-tier limit still applies
   GROQ_API_KEY: useGroq ? process.env.GROQ_API_KEY : "",
   LOG_FORMAT: "text",
 };
@@ -196,7 +200,9 @@ say(`
 Operon is running locally.
 
   Backend        ${backendUrl}      health: ${backendUrl}/health   (detail: send the admin token to /ready)
-  Buggy Cloud    ${site.url}/   scenarios: ?bug=1 … ?bug=7  (healthy control: no ?bug)  reset: add &reset=1
+  NexaDesk app   ${site.url}/   (the demo SaaS; scenarios ?bug=1 … ?bug=8, reset: add &reset=1)
+  Demo console   ${site.url}/demo   (presenter: activate / reset scenarios, see their real status)
+  Support desk   ${backendUrl}/dashboard   (escalation tickets; paste the admin token)
   SDK example    ${site.url}/sdk/examples/minimal.html
   Model          ${useGroq ? "Groq (GROQ_API_KEY from your environment)" : "offline rule-based engine (deterministic; set --groq for the real model)"}
   Database       ${DB}
@@ -206,7 +212,7 @@ Operon is running locally.
 
 Chrome extension (desktop Chrome, once):
   1. chrome://extensions → turn on "Developer mode" → "Load unpacked" → choose  ${path.join(ROOT, "extension/dist/local-demo")}
-  2. Open ${site.url}/?bug=2 in a tab, click the Operon toolbar icon, open "Backend access", paste your token.
+  2. Open ${site.url}/?bug=2&reset=1 in a tab, click the Operon toolbar icon, open "Backend access", paste your token.
   3. Press "Ask Operon". (After rebuilding, click the reload icon on chrome://extensions and reload the tab.)
 `);
 if (problems.length) {

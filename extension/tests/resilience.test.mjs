@@ -47,7 +47,7 @@ test("backend rejection is shown with its reason", async () => {
 
 test("stale session (404) -> tells the user to reset", async () => {
   const world = createWorld({
-    initialStorage: { operon_state: { state: { phase: "needs_more_evidence", session: session("NEED_INFORMATION", { evidence_request: evidenceRequest() }) }, nextEvidenceId: 3 } },
+    initialStorage: { operon_state: { state: { phase: "needs_more_evidence", session: session("NEED_INFORMATION", { evidence_request: evidenceRequest() }) }, nextEvidenceId: 3, target: { tabId: 5, origin: "https://github.com" } } },
     backend: () => ({ status: 404, body: { detail: "No session" } }),
   });
   await world.load();
@@ -69,7 +69,7 @@ test("escalated session renders the backend's reason and guidance (diagnosis may
 test("restart mid-EXECUTING: the backend is asked, and the step is closed honestly", async () => {
   const pending = plan("clear_storage_key");
   const world = createWorld({
-    initialStorage: { operon_state: { state: { phase: "executing", session: session("EXECUTING", { pending_action: pending }) }, nextEvidenceId: 5 } },
+    initialStorage: { operon_state: { state: { phase: "executing", session: session("EXECUTING", { pending_action: pending }) }, nextEvidenceId: 5, target: { tabId: 5, origin: "https://github.com" } } },
     backend: (method, path, body) => {
       if (method === "GET") return session("EXECUTING", { pending_action: pending });
       if (path.endsWith("/action-result")) return session("NEED_INFORMATION", { pending_action: pending, evidence_request: evidenceRequest({ purpose: "retry", reason: "re-collecting" }) });
@@ -87,7 +87,7 @@ test("restart mid-EXECUTING: the backend is asked, and the step is closed honest
 test("restart mid-VERIFYING: reported as an interrupted observation, not a pass", async () => {
   const pending = plan("reload");
   const world = createWorld({
-    initialStorage: { operon_state: { state: { phase: "verifying", session: session("VERIFYING", { pending_action: pending }) }, nextEvidenceId: 5 } },
+    initialStorage: { operon_state: { state: { phase: "verifying", session: session("VERIFYING", { pending_action: pending }) }, nextEvidenceId: 5, target: { tabId: 5, origin: "https://github.com" } } },
     backend: (method, path) => {
       if (method === "GET") return session("VERIFYING", { pending_action: pending });
       if (path.endsWith("/verify")) return session("NEED_INFORMATION", { evidence_request: evidenceRequest({ purpose: "retry" }) });
@@ -102,7 +102,7 @@ test("restart mid-VERIFYING: reported as an interrupted observation, not a pass"
 
 test("restart while idle at approval: backend state is re-rendered, nothing re-executed", async () => {
   const world = createWorld({
-    initialStorage: { operon_state: { state: { phase: "awaiting_approval", session: session("WAITING_FOR_APPROVAL", { pending_action: plan("reload") }) }, nextEvidenceId: 5 } },
+    initialStorage: { operon_state: { state: { phase: "awaiting_approval", session: session("WAITING_FOR_APPROVAL", { pending_action: plan("reload") }) }, nextEvidenceId: 5, target: { tabId: 5, origin: "https://github.com" } } },
     backend: () => ({ status: 500, body: {} }),
   });
   await world.load();

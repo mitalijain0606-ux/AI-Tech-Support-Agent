@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     # Shared state (rate limits, live events) across instances. Empty = in-process.
     redis_url: str = ""
 
+    # Largest request body accepted, in bytes. The biggest legitimate payload (a full evidence bundle
+    # at every schema bound) is well under 1 MB; anything larger is refused with 413 before it is read.
+    max_request_body_bytes: int = 2_000_000
+
     log_format: Literal["text", "json"] = "text"
     log_level: str = "INFO"
 

@@ -5,13 +5,15 @@
 //   npm run e2e:screens
 import { chromium } from "playwright-core";
 import { startBuggyCloud } from "../../buggy-cloud/server.mjs";
+import { BUGS } from "../../buggy-cloud/src/bugs.js";
+import { ROUTES } from "../../buggy-cloud/src/ui.js";
 import { recorder } from "./lib/harness.mjs";
 
 const { check, summary } = recorder();
 const app = await startBuggyCloud();
 const browser = await chromium.launch({ channel: "chromium", executablePath: process.env.OPERON_E2E_CHROMIUM || undefined, headless: process.env.OPERON_E2E_HEADED !== "1" });
-const SCREENS = ["overview", "projects", "reports", "account", "settings"];
-const HASH = { overview: "#/", projects: "#/projects", reports: "#/reports", account: "#/account", settings: "#/settings" };
+const SCREENS = ROUTES.map((r) => r.title.toLowerCase());
+const HASH = Object.fromEntries(ROUTES.map((r) => [r.title.toLowerCase(), r.hash]));
 
 async function open(page, query) {
   await page.goto(`${app.url}/${query}`);
@@ -25,7 +27,7 @@ const text = (page, sel) => page.locator(sel).first().textContent();
 const count = (page, sel) => page.locator(sel).count();
 
 try {
-  for (const bug of [0, 1, 2, 3, 4, 5, 6, 7]) {
+  for (const bug of [0, ...BUGS.map((b) => b.id)]) {
     const ctx = await browser.newContext();
     const page = await ctx.newPage();
     const apiCalls = [];
@@ -39,12 +41,34 @@ try {
       await show(page, s);
       seen[s] = { errors: await count(page, ".error"), nav: await count(page, "nav a") };
     }
-    check(`${label}: all five screens render with navigation`, SCREENS.every((s) => seen[s].nav === 5));
+    check(`${label}: all ${SCREENS.length} screens render with navigation`, SCREENS.every((s) => seen[s].nav === SCREENS.length));
     check(`${label}: switching screens does not re-fetch`, apiCalls.length === before, `${apiCalls.length - before} extra`);
     if (!bug) {
       check("healthy: no screen shows an error", SCREENS.every((s) => seen[s].errors === 0), JSON.stringify(seen));
       await show(page, "projects");
       check("healthy: projects table has three rows and a total", (await count(page, "#projects-table tbody tr")) === 3 && /\$70,051\.25/.test(await text(page, "#projects-total")));
+      await page.fill("#project-search", "billing");
+      check("healthy: search filters the table (name)", (await count(page, "#projects-table tbody tr")) === 1);
+      await page.fill("#project-search", "");
+      await page.selectOption("#project-status", "at_risk");
+      check("healthy: the status filter works", (await count(page, "#projects-table tbody tr")) === 1);
+      await page.reload();
+      await page.waitForFunction(() => window.__buggyCloud?.ready === true);
+      await show(page, "projects");
+      check("healthy: the last filter is remembered", (await page.locator("#project-status").inputValue()) === "at_risk");
+      await page.selectOption("#project-status", "all");
+      await show(page, "settings");
+      await page.selectOption("#pref-timezone", "Asia/Tokyo");
+      await page.click("#pref-save");
+      await page.waitForFunction(() => document.querySelector("#pref-saved")?.textContent === "Saved.");
+      await show(page, "account");
+      check("healthy: a saved preference persists and is used", ((await page.locator("#account-prefs dd").nth(0).textContent()) ?? "").trim() === "Asia/Tokyo" && /6:00 PM/.test(await text(page, "#prefs-example")));
+      await show(page, "notifications");
+      await page.uncheck("#notify-email");
+      await page.reload();
+      await page.waitForFunction(() => window.__buggyCloud?.ready === true);
+      await show(page, "notifications");
+      check("healthy: a notification setting persists across a reload", !(await page.locator("#notify-email").isChecked()));
       await show(page, "account");
       check("healthy: account and formatted preferences", /Dana Whitfield/.test(await text(page, "#account-details")) && /\$1,234\.50/.test(await text(page, "#prefs-example")));
       await show(page, "settings");
@@ -70,10 +94,43 @@ try {
       await show(page, "account");
       check("bug 5: the account screen shows signed out", (await count(page, "#account-signed-out")) === 1 && /Signed out/.test(await text(page, "#account")));
     }
+    if (bug === 8) {
+      await show(page, "projects");
+      check("bug 8: project search is disabled and says why", (await page.locator("#project-search").isDisabled()) && (await count(page, "#search-unavailable")) === 1);
+    }
     if (bug === 6 || bug === 7) {
       await show(page, "reports");
       check(`${label}: the reports screen is unavailable`, (await count(page, "#reports-empty")) === 1);
     }
+    await ctx.close();
+  }
+
+  // A healthy page makes no failing request of its own (Operon records every response >= 400 as
+  // evidence; the optional SDK-config check used to answer 404 and was diagnosed as "the problem").
+  {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    const failed = [];
+    page.on("response", (r) => { if (r.status() >= 400 && !r.url().endsWith("/favicon.ico")) failed.push(`${r.status()} ${new URL(r.url()).pathname}`); });
+    await open(page, "?reset=1");
+    await page.reload();
+    await page.waitForFunction(() => window.__buggyCloud?.ready === true);
+    check("healthy: loading and reloading the app makes no failing request (no evidence Operon could misread)", failed.length === 0, failed.join(", "));
+    await ctx.close();
+  }
+
+  // A seeded client-side bug that was already fixed in this browser must not be advertised as active.
+  {
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    await open(page, "?bug=2&reset=1");
+    await page.evaluate(() => localStorage.setItem("buggycloud_prefs", JSON.stringify({ timezone: "UTC", locale: "en-US", currency: "USD" })));
+    await open(page, "?bug=2");
+    const footer = await text(page, "footer");
+    check("stale scenario: the footer says bug 2 is no longer active instead of describing a symptom that is not there", (await count(page, ".error")) === 0 && /not active in this browser/.test(footer) && !/Dates are missing/.test(footer), footer);
+    await page.click("#reset-scenario");
+    await page.waitForFunction(() => window.__buggyCloud?.ready === true && document.querySelectorAll(".error").length > 0);
+    check("stale scenario: \"Plant it again\" brings the defect back", (await count(page, ".error")) > 0);
     await ctx.close();
   }
 
@@ -82,7 +139,7 @@ try {
   const page = await ctx.newPage();
   await open(page, "?diagnostics=1&reset=1#/settings");
   await page.waitForFunction(() => document.querySelector("#screen")?.dataset.screen === "settings");
-  check("diagnostics: revealed only with ?diagnostics=1 (and the hash survives the reset)", (await count(page, "#diagnostics a")) === 8);
+  check("diagnostics: revealed only with ?diagnostics=1 (and the hash survives the reset)", (await count(page, "#diagnostics a")) === BUGS.length + 1);
   await page.locator("#diagnostics a", { hasText: "Saved timezone is invalid" }).click();
   await page.waitForFunction(() => window.__buggyCloud?.ready === true && window.__buggyCloud.bug === 2);
   check("diagnostics: a scenario link switches the seeded bug on", (await count(page, ".error")) > 0);

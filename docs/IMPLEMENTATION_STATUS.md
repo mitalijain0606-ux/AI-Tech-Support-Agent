@@ -651,6 +651,14 @@ self-written set: a sanity check, not a benchmark.
 | New: `e2e:dashboard` · `e2e:screens` · `e2e:reproduce` · `e2e:github-escalation` | 15/15 · 38/38 · 11/11 · 14/14 |
 | `e2e:live` against `node scripts/dev-local.mjs` (the one-command local stack) | 76/76; `/dashboard` served (200) |
 
+## Hackathon completion pass (2026-10-19)
+
+NexaDesk (the redesigned demo SaaS, 8 scenarios, `/demo` console), the redesigned SDK support widget
+with session recovery (`client.resume`), the redesigned extension popup and support desk, and
+deterministic guidance-grounding checks. Details, statuses and test results:
+[`FEATURE_AUDIT_REPORT.md` §0](FEATURE_AUDIT_REPORT.md); running the demo:
+[`HACKATHON_DEMO_GUIDE.md`](HACKATHON_DEMO_GUIDE.md). Uncommitted.
+
 ## Status summary
 
 | Status | Items |
@@ -658,5 +666,6 @@ self-written set: a sanity check, not a benchmark.
 | **DONE** | github.com approve/deny demo; github.com escalation scenarios (real 404, real 401); live progress stream; Render decision; config validation, `/health`, `/ready`; auth, tenants, approval enforcement; rate limits; logging; CORS policy; migrations, Postgres/pgvector, Redis (local); dependency locking and audits; staged pipeline and classify; optional staged LLM calls with per-stage eval; evidence budgeting; escalation tickets, confidence routing, ticket API and read-only dashboard; sandbox reproduction tool (local); answer endpoint; `eval.py` and fixtures; Buggy Cloud (7 bugs, 5 screens, hidden diagnostics control); SDK and `reset_user_preference`; second-app E2E; SDK-vs-extension design |
 | **PARTIAL** | CI (written, never run on GitHub); evaluation (small, self-written, one model); credential redaction (heuristic, see second pass); verification (browser-reported); key lifecycle (CLI only, no expiry) |
 | **NOT DONE, deliberately** | separate evidence/diagnosis/action/verification tables; a Redis session cache (reasons in `production-architecture.md`) |
+| **NOT IMPLEMENTED (documented)** | multiple issues per session; durable background jobs; step-order checking of KB procedures |
 | **NOT STARTED** | key rotation/expiry and an admin API; non-Chromium browsers; published SDK package; learning-loop evaluation; the GitHub API agent (separate product) |
 | **BLOCKED** (needs your accounts or authorization) | creating the Neon database and Render service; a real domain and the `fake-saas` target; minting production keys; running CI on GitHub; testing against managed Redis; demo rehearsals in desktop Chrome; committing or pushing this pass |

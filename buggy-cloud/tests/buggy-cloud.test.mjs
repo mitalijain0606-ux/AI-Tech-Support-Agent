@@ -133,7 +133,10 @@ test("the Operon config endpoint exists only when the server was started with on
   const without = await startBuggyCloud();
   const withCfg = await startBuggyCloud({ operon: { backendUrl: "http://localhost:8000", token: "opk_local" } });
   try {
-    assert.equal((await fetch(`${without.url}/operon-config.json`)).status, 404);
+    // Unconfigured is "nothing here" (204, empty), not an error a diagnosis could mistake for the problem.
+    const none = await fetch(`${without.url}/operon-config.json`);
+    assert.equal(none.status, 204);
+    assert.equal(await none.text(), "");
     const res = await fetch(`${withCfg.url}/operon-config.json`);
     assert.equal(res.status, 200);
     assert.deepEqual(await res.json(), { backendUrl: "http://localhost:8000", token: "opk_local" });
@@ -160,9 +163,70 @@ test("a scenario can be reset and run again: only Buggy Cloud's own state is rem
   assert.deepEqual(await resetScenario(memory(), {}), { unregistered: 0 }); // no service worker support is fine
 });
 
-test("five screens, each reachable by its own hash route; unknown routes show the overview", async () => {
+test("seven screens, each reachable by its own hash route; unknown routes show the overview", async () => {
   const { ROUTES, routeOf } = await import("../src/ui.js");
-  assert.deepEqual(ROUTES.map((r) => r.title), ["Overview", "Projects", "Reports", "Account", "Settings"]);
+  assert.deepEqual(ROUTES.map((r) => r.title), ["Overview", "Projects", "Reports", "Notifications", "Account", "Settings", "Help"]);
   for (const r of ROUTES) assert.equal(routeOf(r.hash), r);
   for (const bad of ["", "#", "#/nope", "#/projects/../settings", "javascript:alert(1)"]) assert.equal(routeOf(bad).title, "Overview", bad);
+});
+
+test("project search filters by text (name or owner) and status", async () => {
+  const { filterProjects } = await import("../src/ui.js");
+  const { PROJECTS } = await import("../src/mock-data.js");
+  assert.equal(filterProjects(PROJECTS).length, 3);
+  assert.deepEqual(filterProjects(PROJECTS, { text: "billing" }).map((p) => p.id), ["p2"]);
+  assert.deepEqual(filterProjects(PROJECTS, { text: "lena" }).map((p) => p.id), ["p3"]);
+  assert.deepEqual(filterProjects(PROJECTS, { status: "at_risk" }).map((p) => p.id), ["p2"]);
+  assert.equal(filterProjects(PROJECTS, { text: "nothing like this" }).length, 0);
+});
+
+test("bug 8 plants unparseable saved search filters; reset removes them", async () => {
+  const { SEARCH_KEY } = await import("../src/bugs.js");
+  const s = memory();
+  assert.equal(seedBug(bugById(8), s), true);
+  assert.throws(() => JSON.parse(s.getItem(SEARCH_KEY)));
+  await resetScenario(s, { serviceWorker: null });
+  assert.equal(s.getItem(SEARCH_KEY), null);
+});
+
+test("switching to a different scenario starts clean; reopening the same one keeps its state", async () => {
+  const { switchesScenario } = await import("../src/activate.js");
+  const s = memory();
+  seedBug(bugById(1), s);
+  assert.equal(switchesScenario(bugById(1), s), false, "same scenario: a fix stays fixed");
+  assert.equal(switchesScenario(bugById(2), s), true, "another scenario: clean slate first");
+  assert.equal(switchesScenario(null, s), false, "no scenario selected: leave the browser as it is");
+  assert.equal(switchesScenario(bugById(2), memory()), false, "nothing planted yet");
+});
+
+test("scenario status comes from the real application state, not from a label", async () => {
+  const { scenarioStatus } = await import("../src/scenarios.js");
+  const { SEARCH_KEY } = await import("../src/bugs.js");
+  for (const id of [1, 2, 3, 8]) {
+    const s = memory();
+    assert.equal(scenarioStatus(id, s), "idle", `bug ${id} before planting`);
+    seedBug(bugById(id), s);
+    assert.equal(scenarioStatus(id, s), "active", `bug ${id} planted`);
+  }
+  const fixed = memory();
+  seedBug(bugById(2), fixed);
+  resetPreference(fixed, PREFS_KEY, "timezone"); // what Operon's approved fix does
+  assert.equal(scenarioStatus(2, fixed), "fixed");
+  const cleared = memory();
+  seedBug(bugById(8), cleared);
+  cleared.removeItem(SEARCH_KEY); // clear_storage_key
+  assert.equal(scenarioStatus(8, cleared), "fixed");
+  assert.equal(scenarioStatus(7, memory(), { workers: 1 }), "active");
+  for (const id of [4, 5, 6]) assert.equal(scenarioStatus(id, memory()), "server");
+});
+
+test("the outcome log keeps ids and outcomes only, bounded", async () => {
+  const { readOutcomes, recordOutcome } = await import("../src/scenarios.js");
+  const s = memory();
+  for (let i = 0; i < 40; i++) recordOutcome(s, { bug: 2, state: "resolved", session: `s${i}`, ticket: null });
+  const log = readOutcomes(s);
+  assert.equal(log.length, 30);
+  assert.deepEqual(Object.keys(log[0]).sort(), ["at", "bug", "session", "state", "ticket"]);
+  s.setItem("nexadesk_operon_outcomes", "{broken");
+  assert.deepEqual(readOutcomes(s), []);
 });

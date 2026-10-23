@@ -37,7 +37,7 @@ test("the answer to a question is redacted before it is sent", async () => {
   const req = evidenceRequest({ collectors: ["console"], question: "What did you click last?" });
   const asking = session("NEED_INFORMATION", { evidence_request: req });
   const world = await createWorld({
-    initialStorage: { operon_state: { state: { phase: "needs_more_evidence", session: asking, diagnosis: null }, nextEvidenceId: 10 } },
+    initialStorage: { operon_state: { state: { phase: "needs_more_evidence", session: asking, diagnosis: null }, nextEvidenceId: 10, target: { tabId: 5, origin: "https://github.com" } } },
     backend: (method, path) => (path.endsWith("/answer") ? asking : { status: 404, body: {} }),
   }).load();
   const popup = world.connect();
@@ -53,7 +53,7 @@ test("redaction happens before truncation, so a secret near the limit is not cut
   const req = evidenceRequest({ collectors: ["console"], question: "q?" });
   const asking = session("NEED_INFORMATION", { evidence_request: req });
   const world = await createWorld({
-    initialStorage: { operon_state: { state: { phase: "needs_more_evidence", session: asking, diagnosis: null }, nextEvidenceId: 10 } },
+    initialStorage: { operon_state: { state: { phase: "needs_more_evidence", session: asking, diagnosis: null }, nextEvidenceId: 10, target: { tabId: 5, origin: "https://github.com" } } },
     backend: (method, path) => (path.endsWith("/answer") ? asking : { status: 404, body: {} }),
   }).load();
   const popup = world.connect();

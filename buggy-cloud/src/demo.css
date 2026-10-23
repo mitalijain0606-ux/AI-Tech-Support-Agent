@@ -1,0 +1,17 @@
+.console { max-width: 1180px; margin: 0 auto; padding: 24px 24px 48px; display: flex; flex-direction: column; gap: 20px; }
+.console-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.console-head h1 { font-size: 22px; }
+.console-head p { margin: 4px 0 0; color: var(--text-2); max-width: 720px; }
+.presenter-only { background: var(--warning-soft); color: var(--warning); border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 700; }
+.scenarios { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+.scenario { display: flex; flex-direction: column; gap: 10px; }
+.scenario header { display: flex; gap: 10px; align-items: flex-start; }
+.scenario .num { flex: none; width: 28px; height: 28px; border-radius: 8px; background: var(--primary-soft); color: var(--primary); display: grid; place-items: center; font-weight: 700; }
+.scenario h2 { font-size: 15px; margin: 0; }
+.scenario dl { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: 13px; }
+.scenario dt { color: var(--text-3); }
+.scenario dd { margin: 0; overflow-wrap: anywhere; }
+.scenario .badge { white-space: normal; }
+.scenario .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
+.steps { margin: 0; padding-left: 20px; color: var(--text-2); }
+.steps li { margin: 4px 0; }

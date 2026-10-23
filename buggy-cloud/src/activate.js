@@ -6,9 +6,9 @@
 // a fix that removes the bad value stays fixed after a reload instead of the
 // bug re-planting itself.
 
-import { bugById, PREFS_KEY, SETTINGS_KEY } from "./bugs.js";
+import { bugById, PREFS_KEY, SEARCH_KEY, SETTINGS_KEY } from "./bugs.js";
 
-const SEEDED_MARKER = "buggycloud_seeded";
+export const SEEDED_MARKER = "buggycloud_seeded";
 
 export function activeBug(search) {
   const raw = new URLSearchParams(search).get("bug");
@@ -28,6 +28,9 @@ export function seedBug(bug, storage) {
     case "invalid-currency":
       storage.setItem(PREFS_KEY, JSON.stringify({ timezone: "UTC", locale: "en-US", currency: "US" }));
       break;
+    case "corrupt-saved-search":
+      storage.setItem(SEARCH_KEY, '{"status":["active","at_risk"],"owner":');
+      break;
     default:
       return false;
   }
@@ -41,7 +44,7 @@ export function seedBug(bug, storage) {
  * workers. Only this app's own keys; nothing else in storage is touched.
  */
 export async function resetScenario(storage, nav = navigator) {
-  for (const key of [SETTINGS_KEY, PREFS_KEY, SEEDED_MARKER, "buggycloud_sw_seeded"]) storage.removeItem(key);
+  for (const key of [SETTINGS_KEY, PREFS_KEY, SEARCH_KEY, SEEDED_MARKER, "buggycloud_sw_seeded"]) storage.removeItem(key);
   let unregistered = 0;
   try {
     for (const registration of (await nav.serviceWorker?.getRegistrations?.()) ?? []) if (await registration.unregister()) unregistered++;
@@ -49,6 +52,16 @@ export async function resetScenario(storage, nav = navigator) {
     /* no service worker support: nothing to remove */
   }
   return { unregistered };
+}
+
+/**
+ * Switching to a different scenario starts from a clean slate, so a value planted for one bug can
+ * never leak into the next one's demo (or test). Re-opening the same scenario keeps its state: a
+ * fix stays fixed until "Reset" plants it again.
+ */
+export function switchesScenario(bug, storage) {
+  const marker = storage.getItem(SEEDED_MARKER);
+  return Boolean(bug && marker && marker !== String(bug.id));
 }
 
 export function wantsReset(search) {

@@ -47,6 +47,8 @@ export function createWorld({
   const local = { ...initialLocal }; // chrome.storage.local (persistent settings, e.g. the access token)
   const listeners = { connect: [], debuggerEvent: [], tabUpdated: new Set() };
   const requests = [];
+  // Every open tab by id (chrome.tabs.get); `tabs` is what chrome.tabs.query reports as active.
+  const openTabs = new Map(tabs.map((t) => [t.id, t]));
 
   const chrome = {
     runtime: { lastError: undefined, onConnect: { addListener: (fn) => listeners.connect.push(fn) } },
@@ -72,6 +74,10 @@ export function createWorld({
     },
     tabs: {
       query: async () => tabs,
+      get: async (tabId) => {
+        if (!openTabs.has(tabId)) throw new Error(`No tab with id: ${tabId}.`);
+        return clone(openTabs.get(tabId));
+      },
       reload: (tabId) => {
         log.push("reload");
         setTimeout(() => {
@@ -83,9 +89,10 @@ export function createWorld({
         addListener: (fn) => listeners.tabUpdated.add(fn),
         removeListener: (fn) => listeners.tabUpdated.delete(fn),
       },
-      sendMessage: (_tabId, message, callback) => {
+      sendMessage: (tabId, message, callback) => {
         const msg = clone(message);
         log.push(`content:${msg.type}`);
+        world.lastMessageTab = tabId;
         let response;
         try {
           response = content(msg, world);
@@ -140,6 +147,12 @@ export function createWorld({
   };
 
   const world = {
+    openTabs,
+    /** The person switches to another (already open) tab. */
+    activate: (tab) => {
+      openTabs.set(tab.id, tab);
+      tabs.splice(0, tabs.length, tab);
+    },
     chrome,
     storage,
     local,
@@ -274,5 +287,6 @@ export const awaitingApproval = (pendingAction) => ({
   operon_state: {
     state: { phase: "awaiting_approval", session: session("WAITING_FOR_APPROVAL", { pending_action: pendingAction }), diagnosis: null },
     nextEvidenceId: 10,
+    target: { tabId: 5, origin: "https://github.com" }, // the tab the investigation is about (TAB)
   },
 });

@@ -149,8 +149,10 @@ async function ask(bug, text) {
     if (/Needs more evidence/.test(header)) await popup.click("Collect evidence");
     await popupPage.waitForTimeout(1500);
   }
-  await popupPage.locator("header", { hasText: stop }).waitFor({ timeout: 60_000 });
-  return { page, popupPage, popup, sid: (await extensionState(popupPage)).session.session_id };
+  await popupPage.locator("header", { hasText: new RegExp(`${stop.source}|Error`) }).waitFor({ timeout: 60_000 });
+  const st = await extensionState(popupPage);
+  if (st.phase === "error") throw new Error(`the extension reported an error: ${st.message}`);
+  return { page, popupPage, popup, sid: st.session.session_id };
 }
 for (const bug of [...BUGS, null]) {
   const label = `Extension · ${bug ? `bug ${bug.id} ${bug.slug}` : "healthy control"}`;
