@@ -1,4 +1,5 @@
 import logging
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -87,12 +88,40 @@ def check_configuration() -> None:
         raise RuntimeError("Refusing to start with an unsafe configuration: " + "; ".join(errors))
 
 
+async def wait_for_knowledge_base(limit_seconds: float) -> bool:
+    """Index the knowledge base, waiting at most `limit_seconds` before serving.
+
+    On a fresh database indexing loads the embedding model, which may download it, and
+    huggingface_hub waits with no time limit for a download lock another process holds.
+    Indexing therefore runs in a daemon thread: if it isn't done in time, startup goes
+    on (retrieval reports the index as empty until it finishes) instead of never
+    opening the port. True when indexing finished within the limit."""
+    done = threading.Event()
+
+    def work() -> None:
+        try:
+            initialize_knowledge_base()
+        finally:
+            done.set()
+
+    threading.Thread(target=work, name="operon-kb-init", daemon=True).start()
+    if await run_in_threadpool(done.wait, limit_seconds):
+        return True
+    logger.warning(
+        "Knowledge base indexing still running after %.0fs (loading the embedding model; the first run "
+        "downloads it, and another Operon process on this machine may hold its download lock). Serving now; "
+        "retrieval reports the index as empty until indexing finishes. Set KB_STARTUP_WAIT_SECONDS to change the wait.",
+        limit_seconds,
+    )
+    return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging(settings.log_level, settings.log_format)
     check_configuration()
     init_db()
-    await run_in_threadpool(initialize_knowledge_base)
+    await wait_for_knowledge_base(settings.kb_startup_wait_seconds)
     yield
 
 

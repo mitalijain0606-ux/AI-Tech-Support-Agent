@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # corrupt cache), don't retry the download for this long: retrieval is
     # optional precedent, and a hanging download must not slow every cycle.
     embedding_retry_cooldown_seconds: float = 60.0
+    # Startup waits at most this long for knowledge-base indexing (which, on a fresh
+    # database, loads the embedding model and may download it). After that the server
+    # opens its port anyway and indexing finishes in the background: a stalled download,
+    # or another process holding the model cache's download lock, must not keep the
+    # backend from serving.
+    kb_startup_wait_seconds: float = 30.0
 
     # "combined": one grounded diagnose call per cycle (fewest calls — the free
     # tier is rate limited). "staged": separate Classify, Diagnose and Plan

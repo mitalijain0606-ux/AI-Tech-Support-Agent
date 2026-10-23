@@ -77,7 +77,7 @@ def test_ready_reports_checks_without_secrets(monkeypatch):
     assert body["status"] in ("ready", "degraded")
     assert body["checks"]["database"] == {"status": "ok", "kind": "sqlite"}
     assert body["checks"]["groq"]["configured"] is False  # the test suite blanks the key
-    assert set(body["checks"]["embeddings"]) == {"loaded", "unavailable", "reason"}
+    assert set(body["checks"]["embeddings"]) == {"loaded", "loading", "unavailable", "reason"}
 
     sentinel = "sentinel-key-value-0123456789"
     monkeypatch.setattr(backend_main.settings, "groq_api_key", sentinel)

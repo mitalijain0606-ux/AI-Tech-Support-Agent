@@ -182,3 +182,50 @@ def test_an_empty_index_is_not_reported_as_no_match(fresh_db, monkeypatch):
     assert record["status"] == "empty_index" and record["chunk_ids"] == []
     assert "knowledge base is empty" in record["reason"]
     assert session["phase"] == "ACTION_PROPOSED"  # the investigation itself continues
+
+
+# ---- a model load that never finishes (stalled download, or another process holding its lock) -----
+
+
+def test_startup_does_not_wait_forever_for_a_stalled_model_load(fresh_db, monkeypatch, caplog):
+    import threading
+    import time
+
+    from operon_backend.config import settings
+
+    release = threading.Event()
+
+    def stalled():
+        release.wait(30)  # like huggingface_hub waiting on another process's download lock
+        raise OSError("released by the test")
+
+    monkeypatch.setattr(embeddings, "_load_model", stalled)
+    monkeypatch.setattr(settings, "kb_startup_wait_seconds", 0.5)
+    try:
+        started = time.monotonic()
+        with TestClient(app) as c:  # the lifespan completes and the server answers
+            assert time.monotonic() - started < 10
+            assert c.get("/health").status_code == 200
+            assert embeddings.status()["loading"] is True
+        assert "Knowledge base indexing still running" in caplog.text
+    finally:
+        release.set()
+        for _ in range(100):
+            if not embeddings.status()["loading"]:
+                break
+            time.sleep(0.05)
+        embeddings.reset_unavailable_state()
+
+
+def test_a_second_caller_is_not_queued_behind_a_load_in_progress(monkeypatch):
+    import time
+
+    monkeypatch.setattr(embeddings, "_load_model", lambda: pytest.fail("must not start a second load"))
+    assert embeddings._loading.acquire(blocking=False)  # a load is in progress elsewhere
+    try:
+        started = time.monotonic()
+        with pytest.raises(embeddings.EmbeddingUnavailable, match="still loading"):
+            embeddings.embed("my dashboard looks corrupted")
+        assert time.monotonic() - started < 1
+    finally:
+        embeddings._loading.release()
