@@ -346,10 +346,23 @@ export function App() {
             <p className="text-[13px] font-semibold">
               {state.phase === "resolved"
                 ? session?.resolution_state === "declined_by_user" ? "Fix declined — nothing was changed" : "Fixed and verified"
-                : state.phase === "escalated" ? "Handed to the support team" : "Something went wrong"}
+                : state.phase === "escalated"
+                  ? session?.resolution_state === "expired_idle" ? "Expired — nothing was changed" : "Handed to the support team"
+                  : "Something went wrong"}
             </p>
             <p className="max-w-[310px] whitespace-pre-line text-[12px] leading-relaxed text-[#475569]">{state.message || state.diagnosis?.reasoning || "Done."}</p>
             <Button variant="secondary" onClick={() => send({ type: "RESET" })}>Reset</Button>
+          </div>
+        )}
+
+        {(state.phase === "awaiting_approval" || state.phase === "resolved" || state.phase === "escalated") &&
+          (session?.additional_issues?.length ?? 0) > 0 && (
+          <div className="mt-3 rounded-md border border-[#e3e8f0] bg-[#f8fafc] p-2" data-testid="other-issues">
+            <p className="text-[11px] font-semibold text-[#334155]">Other problems to report separately</p>
+            <ul className="mt-1 list-disc pl-4 text-[11px] text-[#475569]">
+              {session!.additional_issues!.slice(0, 5).map((i, n) => <li key={n}>{i.text}</li>)}
+            </ul>
+            <p className="mt-1 text-[10px] text-[#64748b]">Operon handles one problem at a time. Ask again for each of these.</p>
           </div>
         )}
 

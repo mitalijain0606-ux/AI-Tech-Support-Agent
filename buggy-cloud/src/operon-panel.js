@@ -202,6 +202,10 @@ export async function mountOperon({ root, reobserve }) {
           el("li", { textContent: `Afterwards: ${VERIFY[p.verification?.strategy] ?? "Operon checks that the problem is gone."}` }))),
       );
       approve.hidden = reject.hidden = false;
+    } else if (result.state === "escalated" && result.session?.escalation_state?.resolution_state === "expired_idle") {
+      say("This investigation expired because nothing happened for a long time.", "escalated");
+      detail.replaceChildren(section("What you can do", el("p", { textContent: "Nothing was changed. If the problem is still there, start a new investigation." })));
+      fresh.hidden = false;
     } else if (result.state === "escalated") {
       const esc = result.session?.escalation_state ?? {};
       const ticket = typeof esc.ticket_id === "string" && /^tkt_[0-9a-f]{1,32}$/.test(esc.ticket_id) ? esc.ticket_id : null;
@@ -231,6 +235,12 @@ export async function mountOperon({ root, reobserve }) {
       fresh.hidden = false;
     } else {
       say("Operon is still working on this.", "working");
+    }
+    const others = (result.session?.additional_issues ?? []).filter((i) => typeof i?.text === "string").slice(0, 5);
+    if (others.length && ["proposal", "resolved", "escalated", "declined"].includes(result.state)) {
+      detail.append(section("Other problems to report separately",
+        el("ul", { id: "operon-other-issues" }, ...others.map((i) => el("li", { textContent: i.text }))),
+        el("p", { className: "op-muted", textContent: "Operon handles one problem at a time. Start a new investigation for each of these." })));
     }
     remember(result);
     log(result);

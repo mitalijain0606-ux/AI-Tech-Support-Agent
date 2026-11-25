@@ -132,11 +132,19 @@ could report a clean observation. The action only ever affects the user's own ta
 approved by that user, and an action that cannot be re-observed is `inconclusive`, never
 `passed`; but this is not independent, server-side verification of the page.
 
-**Rotating or revoking an API key** (there is no expiry and no admin API):
-1. `python scripts/manage_keys.py create --tenant <t> --subject <s> --role <r>` — new token, shown once.
-2. Give it to the user (popup → *Backend access*).
-3. `python scripts/manage_keys.py list --tenant <t>` to find the old key id, then
-   `python scripts/manage_keys.py revoke <key-id>`. A revoked key gets the same 401 as a forged one.
+**Rotating or revoking an API key.** Keys can carry an expiry (`--expires-days` on the CLI,
+`expires_in_days` on the API); an expired key gets the same 401 as a revoked or forged one.
+With an admin key of the tenant:
+1. `POST /api/admin/keys/{id}/rotate` — a new key for the same subject, role and label; the old
+   key is revoked in the same transaction. The new token is in the response, once.
+2. Or `POST /api/admin/keys/{id}/revoke` to stop a key at once; `GET /api/admin/keys` lists the
+   tenant's keys and their state.
+An admin cannot revoke or rotate the key it is using. The CLI (`scripts/manage_keys.py create /
+list / revoke`) still works for the first admin key and for operators with database access.
+
+**Idle sessions expire.** An unfinished session nobody touched for `SESSION_IDLE_EXPIRY_HOURS`
+(default 24) is closed as `expired_idle` when it is next loaded, and in a sweep at startup:
+no ticket is opened and a pending fix can no longer be approved.
 
 **Assumptions that have not been tested on the real services**
 - Neon: use the *direct* (non-pooled) connection string for `alembic upgrade head`; a

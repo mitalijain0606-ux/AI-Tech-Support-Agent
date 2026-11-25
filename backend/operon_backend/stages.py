@@ -27,6 +27,8 @@ from typing import Any
 from operon_backend.events import emit_stage
 from operon_backend.schemas import EvidenceBundle
 from operon_backend.signals import (
+    blocked_by_client,
+    corrupted_storage,
     invalid_preference,
     is_auth_failure,
     is_cors_failure,
@@ -73,7 +75,7 @@ def classify(user_issue: str, bundle: EvidenceBundle) -> Classification:
     injected_ids = {c.id for c in injected}
     console = [c for c in bundle.console if c.id not in injected_ids and c.level == "error"]
 
-    corrupted = [s for s in bundle.storage if s.present and s.parse_status == "syntax_error"]
+    corrupted = corrupted_storage(bundle.storage, [c.text for c in console])
     if corrupted:
         related = [c.id for c in console if "syntaxerror" in c.text.lower() or "json" in c.text.lower()]
         return Classification(
@@ -84,7 +86,7 @@ def classify(user_issue: str, bundle: EvidenceBundle) -> Classification:
             {"key": corrupted[0].key},
         )
 
-    blocked = [n for n in bundle.network if n.status == 0 and "blocked" in (n.status_text or "").lower()]
+    blocked = [n for n in bundle.network if blocked_by_client(n)]
     if blocked:
         return Classification("blocked_by_client", 0.85, [n.id for n in blocked], ["requests were cancelled client-side"])
 

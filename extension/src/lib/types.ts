@@ -253,6 +253,8 @@ export interface SupportSession {
   policy_decision: (PolicyDecision & { proposal_id: string }) | null;
   verification_state: VerificationRecord | null;
   escalation_state: EscalationRecord | null;
+  /** Other problems in the same complaint or the evidence; each needs its own investigation. */
+  additional_issues?: { text: string; source: "complaint" | "evidence"; evidence_id?: string }[];
   resolution_state: string | null;
   confidence: number;
   phase_history: PhaseTransition[];

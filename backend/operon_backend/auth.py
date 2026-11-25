@@ -63,8 +63,11 @@ def generate_token() -> str:
     return TOKEN_PREFIX + secrets.token_urlsafe(32)
 
 
-def create_api_key(db: DBSession, tenant_id: str, subject: str, role: str = "user", label: str | None = None) -> tuple[str, ApiKey]:
-    """Returns (token, row). The token is not recoverable afterwards."""
+def create_api_key(
+    db: DBSession, tenant_id: str, subject: str, role: str = "user", label: str | None = None, expires_at: datetime | None = None
+) -> tuple[str, ApiKey]:
+    """Returns (token, row). The token is not recoverable afterwards. A key with
+    `expires_at` stops working at that moment (authenticate treats it like a revoked one)."""
     if role not in ROLES:
         raise ValueError(f"role must be one of {ROLES}")
     for name, value in (("tenant", tenant_id), ("subject", subject)):
@@ -79,10 +82,23 @@ def create_api_key(db: DBSession, tenant_id: str, subject: str, role: str = "use
         subject=subject,
         role=role,
         label=label,
+        expires_at=expires_at,
     )
     db.add(row)
     db.commit()
     return token, row
+
+
+def as_utc(value: datetime | None) -> datetime | None:
+    """SQLite returns naive datetimes; everything Operon stores is UTC."""
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def is_expired(row: ApiKey, now: datetime | None = None) -> bool:
+    expires = as_utc(row.expires_at)
+    return expires is not None and expires <= (now or datetime.now(UTC))
 
 
 def revoke_api_key(db: DBSession, key_id: str) -> bool:
@@ -95,11 +111,11 @@ def revoke_api_key(db: DBSession, key_id: str) -> bool:
 
 
 def authenticate(db: DBSession, token: str) -> Principal | None:
-    """The principal for a valid, unrevoked token; None otherwise."""
+    """The principal for a valid, unrevoked, unexpired token; None otherwise."""
     if not token.startswith(TOKEN_PREFIX) or len(token) > 200:
         return None
     row = db.query(ApiKey).filter(ApiKey.key_hash == hash_token(token)).one_or_none()
-    if row is None or row.revoked_at is not None:
+    if row is None or row.revoked_at is not None or is_expired(row):
         return None
     row.last_used_at = datetime.now(UTC)
     db.commit()

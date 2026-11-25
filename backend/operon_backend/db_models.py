@@ -18,6 +18,8 @@ class SessionRecord(Base):
 
     id = Column(String, primary_key=True)
     created_at = Column(DateTime, default=lambda: datetime.now(UTC))
+    # Last change to the session; an idle, unfinished session expires (session_service.expire_if_idle).
+    updated_at = Column(DateTime, nullable=True, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC))
     source = Column(String, default="github")
 
     # Who owns this session. Every read and write is checked against these on
@@ -27,6 +29,8 @@ class SessionRecord(Base):
     created_by = Column(String, nullable=True)  # the creating principal's subject
 
     user_issue = Column(String, nullable=False)
+    # Further problems found in the same complaint; investigated one at a time (see issues.py).
+    additional_issues = Column(MutableList.as_mutable(JSON), nullable=True, default=list)
     conversation_history = Column(MutableList.as_mutable(JSON), default=list)
 
     issue_category = Column(String, nullable=True)
@@ -118,6 +122,19 @@ class ApiKey(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(UTC))
     last_used_at = Column(DateTime, nullable=True)
     revoked_at = Column(DateTime, nullable=True)
+    expires_at = Column(DateTime, nullable=True)  # None: never expires
+
+
+class InflightModelCall(Base):
+    """A model call in progress for a session, committed before the call starts and
+    deleted when it ends (see inflight.py). One left behind means the call was cut off
+    (the backend stopped mid-call); the next cycle counts it against the session's budget."""
+
+    __tablename__ = "inflight_model_calls"
+
+    session_id = Column(String, primary_key=True)
+    started_at = Column(DateTime, nullable=False, default=lambda: datetime.now(UTC))
+    process_id = Column(String, nullable=False)
 
 
 class Ticket(Base):

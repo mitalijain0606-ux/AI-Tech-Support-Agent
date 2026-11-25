@@ -27,6 +27,7 @@ def groq(monkeypatch):
     monkeypatch.setattr(llm, "GROQ_API_URL", server.url)
     monkeypatch.setattr(settings, "groq_api_key", STUB_KEY)
     monkeypatch.setattr(settings, "groq_timeout_seconds", 2.0)
+    monkeypatch.setattr(settings, "groq_rate_limit_retries", 0)  # retries have their own tests below
     monkeypatch.setattr("operon_backend.investigation.search", lambda *a, **k: [])
     yield server
     server.stop()
@@ -209,3 +210,51 @@ def test_parse_shapes(raw, ok):
 def test_model_cannot_set_the_engine_label():
     parsed = _parse(json.dumps({**answer(), "engine": "rule_based"}))
     assert parsed.engine == "groq"  # the default; the model's value was discarded
+
+
+# ---- rate limits: wait as asked, retry a bounded number of times -------------------------------
+
+
+@pytest.fixture
+def retrying(groq, monkeypatch):
+    monkeypatch.setattr(settings, "groq_rate_limit_retries", 2)
+    monkeypatch.setattr(settings, "groq_rate_limit_max_wait_seconds", 1.0)
+    return groq
+
+
+def test_a_rate_limit_is_retried_after_the_requested_wait_and_the_session_continues(retrying):
+    retrying.reply(Reply({"error": {"message": "rate limit"}}, status=429, headers={"retry-after": "0.2"}))
+    retrying.reply(answer(action=CLEAR))
+    s, res = investigate()
+    assert res.status_code == 200 and res.json()["session"]["phase"] == "ACTION_PROPOSED"
+    assert len(retrying.requests) == 2  # the same call, sent again after the wait
+
+
+def test_an_overloaded_service_503_is_retried_too(retrying):
+    retrying.reply(Reply({"error": {"message": "overloaded"}}, status=503, headers={"retry-after": "0"}))
+    retrying.reply(answer(action=CLEAR))
+    _, res = investigate()
+    assert res.status_code == 200 and len(retrying.requests) == 2
+
+
+def test_a_wait_longer_than_the_limit_fails_at_once_with_the_reason(retrying):
+    retrying.reply(Reply({"error": {"message": "rate limit"}}, status=429, headers={"retry-after": "60"}))
+    _, res = investigate()
+    assert res.status_code == 400 and "status 429, retry after 60s" in res.json()["detail"]
+    assert len(retrying.requests) == 1  # nobody is kept waiting a minute
+
+
+def test_retries_are_bounded_and_the_error_says_how_many_were_made(retrying):
+    for _ in range(3):
+        retrying.reply(Reply({"error": {"message": "rate limit"}}, status=429, headers={"retry-after": "0"}))
+    s, res = investigate()
+    assert res.status_code == 400 and "after 2 retries" in res.json()["detail"]
+    assert len(retrying.requests) == 3
+    after = client.get(f"/api/sessions/{s['session_id']}").json()
+    assert after["phase"] == "UNDERSTANDING" and after["activity"][-1]["kind"] == "diagnosis_failed"
+
+
+def test_other_errors_are_never_retried(retrying):
+    retrying.reply(Reply({"error": {"message": "bad key"}}, status=401))
+    _, res = investigate()
+    assert res.status_code == 400 and len(retrying.requests) == 1

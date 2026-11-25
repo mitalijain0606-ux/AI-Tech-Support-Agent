@@ -22,7 +22,7 @@ from typing import Any
 from operon_backend.activity import record_activity
 from operon_backend.loop_driver import MAX_EVIDENCE_ITEMS, evidence_item_count
 from operon_backend.policy import evaluate
-from operon_backend.signals import question_problems
+from operon_backend.signals import blocked_by_client, question_problems
 from operon_backend.tripwire import redact_free_text, scrub_url
 from operon_backend.schemas import (
     COLLECTORS,
@@ -335,7 +335,7 @@ def understand(bundle: EvidenceBundle) -> dict[str, Any]:
         if s.present and s.parse_status not in ("valid_json", "empty"):
             anomalies.append({"id": s.id, "kind": "storage", "summary": f"storage key '{s.key}' is {s.parse_status}"})
     for n in bundle.network:
-        if n.status == 0 and "blocked" in (n.status_text or "").lower():
+        if blocked_by_client(n):
             anomalies.append({"id": n.id, "kind": "network", "summary": f"{n.method} {n.url[:120]} blocked by client"})
         elif n.status >= 400:
             anomalies.append({"id": n.id, "kind": "network", "summary": f"{n.method} {n.url[:120]} -> {n.status}"})

@@ -64,6 +64,7 @@ TRANSITIONS: dict[SessionPhase, set[SessionPhase]] = {
     SessionPhase.WAITING_FOR_APPROVAL: {
         SessionPhase.EXECUTING,
         SessionPhase.RESOLVED,
+        SessionPhase.ESCALATED,  # the approval never came: the session expired while idle
     },
     SessionPhase.EXECUTING: {
         SessionPhase.VERIFYING,

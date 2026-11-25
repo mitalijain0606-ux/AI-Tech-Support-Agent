@@ -1,4 +1,4 @@
-# Operon — feature audit and end-to-end test report (updated 2026-10-19)
+# Operon — feature audit and end-to-end test report (updated 2026-11-25)
 
 An independent audit of what Operon actually does, through **both** the Chrome extension and the SDK,
 against the real backend. Every result below says how it was established:
@@ -11,7 +11,38 @@ against the real backend. Every result below says how it was established:
 Status words: **PASS** (executed and verified end to end), **FAIL**, **PARTIAL**, **BLOCKED**,
 **NOT IMPLEMENTED** (source confirms it does not exist), **NOT TESTED**, **N/A**.
 
-## 0. Hackathon completion pass (2026-10-19) — current state
+## Completion pass (2026-11-25)
+
+Every remaining item that could be built and tested without owner accounts was completed, then the
+whole matrix was re-run on a fresh environment.
+
+| Item | What was built | Evidence |
+|---|---|---|
+| Groq rate limits | A 429/503 is retried after Groq's `Retry-After`, at most `GROQ_RATE_LIMIT_RETRIES` times, only for waits up to `GROQ_RATE_LIMIT_MAX_WAIT_SECONDS`; other errors fail at once | **PASS** [auto] (`test_groq_http_client.py`); journey with the real model 51/51 [browser] |
+| API key management | Optional key expiry (CLI `--expires-days`); admin API to list, create, rotate (atomic) and revoke keys within the admin's tenant; an admin cannot revoke its own key | **PASS** [auto][browser] (`test_key_management.py`, `e2e:completion`) |
+| Idle-session expiry | An unfinished session idle for `SESSION_IDLE_EXPIRY_HOURS` closes as `expired_idle` (no ticket); a pending fix can no longer be approved; widget and popup say so | **PASS** [auto][browser] (`test_session_expiry.py`, `e2e:completion`) |
+| Multi-issue complaints | `issues.py`: complaint split, first problem investigated, others recorded and shown; unexplained failing requests in the evidence recorded too; included in tickets | **PASS** [auto][browser] (`test_multi_issue.py`, `e2e:completion`) |
+| Guidance procedure order | Numbered guidance checked against cited KB procedures: out-of-order and skipped steps are grounding problems (regenerate once, then fail safe) | **PASS** [auto] (`test_guidance.py`) |
+| Interrupted model calls | A marker per model call (`inflight.py`, table `inflight_model_calls`); a call cut off by a restart is counted against the session budget on the next cycle | **PASS** [auto] (`test_inflight_calls.py`) |
+| Independent evaluation set | `eval_data/holdout.json`, 15 cases written apart from the rules (`eval.py --set holdout`) | Offline engine first run: category 86.7 %, action 93.3 %, **1 unsafe action** → two real defects found and fixed (below); now 100 % on all 39 cases, 0 unsafe |
+
+Defects found by the held-out set and fixed: (1) a storage value that is not JSON at all plus a JSON
+parse error on the page was diagnosed as a code error and a reload was proposed — now storage
+corruption (a plain-string value *without* a parse error is still left alone); (2) a request blocked by
+an ad blocker and reported only as `net::ERR_BLOCKED_BY_CLIENT` in `failure_reason` was not recognised.
+Both cases were added to the main fixtures; the held-out set is therefore no longer fully independent
+for those two.
+
+**Re-run on a fresh environment (all green):** backend 766 passed, `ruff` clean, migrations up/down;
+extension unit 118, SDK 70, NexaDesk 19, reproduction tool 4, `tsc` clean; evaluation 39/39.
+Browser E2E (real Chromium, real backend): journey 51/51, completion 23/23, e2e 63/63, wire 11/11,
+buggy 77/77, sdk 142/142, sdk-wire 15/15, screens 50/50, dashboard 18/18, reproduce 11/11, github.com
+17/17, approve/deny demo 23/23, GitHub escalation 14/14, journey with the real Groq model 51/51.
+
+Not done here, and why: deployment and the first CI run on GitHub need the owner's accounts; Edge and
+Firefox are not installed in this environment; durable background jobs remain out of scope.
+
+## 0. Hackathon completion pass (2026-10-19)
 
 This section supersedes the rest of the report where they differ; §1–§13 below are the
 2026-10-17 audit, kept as history. Base: `claude/pensive-euler-0njd58` at `eebdbc3` plus the
@@ -30,11 +61,11 @@ deployed.
 | Extension popup | Redesigned: brand header with the backend phase, backend connection status (live `/health` ping), token status (never the token), the investigated site (bound origin), plain-language proposal and policy, escalation with ticket, "what Operon did" timeline. All labels the suites use kept | **PASS** [browser] |
 | Wrong-tab safety | Kept: actions/evidence only on the bound tab and origin (4 unit + 5 browser checks) | **PASS** |
 | Support desk (dashboard) | Redesigned; counts (open/acknowledged/closed/total) computed from the tickets the API returned for this key; search; status filter; still read-only, strict CSP, text-only, key in memory | **PASS** [browser] |
-| Guidance grounding | New `operon_backend/guidance.py`, part of grounding validation: rejects dangerous instructions (wipe all data/cookies, reinstall browser, disable security, share credentials, run console code, delete account), certainty claims, and contradiction of a cited knowledge rule; one regeneration, then fail safe (escalate). Grounding probe: 3 of the 5 previously accepted bad answers now rejected | **PARTIAL** [auto] — omitted or reordered procedure steps are still not detected (the KB has no machine-readable ordered procedures) |
+| Guidance grounding | New `operon_backend/guidance.py`, part of grounding validation: rejects dangerous instructions (wipe all data/cookies, reinstall browser, disable security, share credentials, run console code, delete account), certainty claims, and contradiction of a cited knowledge rule; one regeneration, then fail safe (escalate). Grounding probe: 3 of the 5 previously accepted bad answers now rejected | **PASS** [auto] (was PARTIAL) — since 2026-11-25 numbered guidance is also checked against the cited procedure (numbered lists and `Diagnostic steps:` lists in the KB): steps out of order or skipped steps in between are rejected (`guidance.procedure_problems`) |
 | Rule engine wording | A failed request seen only in the console is now described from that message (was "Request failed with status (failed)") | **PASS** [auto] |
 | Budgets | Unchanged and enforced on the backend (cycles 5, collector runs 24, model calls 12, evidence items 300, action attempts 2, identical requests 2, retrievals 6; request body 2 MB) | **PASS** [auto] |
-| Multi-issue sessions | Not implemented (one issue per session) — a data-model change that could not be tested adequately in this pass | **NOT IMPLEMENTED** |
-| Durable background jobs | Not implemented — diagnosis runs inside the request; progress is streamed; restart mid-diagnosis loses the cycle cleanly (tested 2026-10-17) | **NOT IMPLEMENTED** |
+| Multi-issue sessions | Since 2026-11-25 (`issues.py`): a complaint with several problems is split; the session investigates the first and records the others (`additional_issues`); failing requests the diagnosis does not explain are recorded too; shown in the widget and the popup, included in tickets | **PASS** [auto][browser] (was NOT IMPLEMENTED) — still one fix and one verification per session, by design |
+| Durable background jobs | Not implemented — diagnosis runs inside the request; progress is streamed; restart mid-diagnosis loses the cycle cleanly (tested 2026-10-17). Since 2026-11-25 a model call cut off by a restart is counted against the session's budget (`inflight.py`) | **NOT IMPLEMENTED** (interrupted calls: **PASS** [auto]) |
 
 ### Defects found in this pass
 
@@ -82,8 +113,8 @@ approval / escalated states. No uncaught page errors or extension runtime errors
 **Yes, locally**, for the scripted journey in `HACKATHON_DEMO_GUIDE.md` — it is the journey the
 `e2e:journey` suite runs, and it passed with the offline engine and with the real model. Caveats:
 desktop (branded) Chrome needs the extension loaded by hand; the free Groq tier can rate-limit (use
-the offline engine as the fallback); nothing is deployed; multi-issue sessions, durable jobs and
-step-order checking of procedures are not implemented.
+the offline engine as the fallback); nothing is deployed; durable jobs are not implemented. (Multi-issue
+sessions and procedure step-order checks were added on 2026-11-25, see below.)
 
 ## 1. What was tested
 
@@ -147,7 +178,7 @@ Environment variables that matter (all in `backend/.env.example`): `AUTH_REQUIRE
 | CORS / origin restrictions | **PASS** [auto][probe] | off by default; preflight from an unlisted origin gets no `Access-Control-Allow-Origin` |
 | Rate limits | **PASS** [probe] | 429 from request 117 of a 130-request burst; failed-auth throttle 429 after 10 bad keys |
 | UI progress (live SSE), recovery after popup reopen | **PASS** [auto][browser] | `test_events.py`; `e2e` resync scenarios |
-| Multiple issues in one session | **NOT IMPLEMENTED** [src][probe] | one `user_issue` and one pending action per session (`db_models.py`); see §8 |
+| Multiple issues in one session | **PASS** [auto][browser] (was NOT IMPLEMENTED) | first problem investigated, the others recorded and shown (`issues.py`, `e2e:completion`); see §8 |
 | Durable background jobs for long investigations | **NOT IMPLEMENTED** [src][probe] | each cycle is one ordinary async HTTP request; see §8 |
 
 ## 3. Existing automated tests (before any change, at `eebdbc3`)
@@ -253,7 +284,7 @@ claimed. Semantic similarity is used only for retrieval, not as proof of support
 - **Traceability: PASS.** Every bundle has `bundle_id`, `request_id`, `cycle`, `after_attempt`; every
   activity entry has a sequence number and kind; diagnoses cite evidence ids; tickets carry the full
   report; all scoped to tenant and session.
-- **Multiple issues: NOT IMPLEMENTED.** A session holds one `user_issue` and one pending action. Probe:
+- **Multiple issues: implemented 2026-11-25** (see the completion pass). Original finding — a session held one `user_issue` and one pending action. Probe:
   a complaint describing a blank settings page *and* a failing reports API, with evidence for both, was
   diagnosed as `storage_corruption` only (citing just that evidence); the server error was not
   mentioned, and a verified fix would mark the whole session RESOLVED. No issue ids, no split. Not
@@ -333,13 +364,12 @@ backend API, the database or the page DOM instead.
 
 ## 13. Prioritised remaining work
 
-1. Decide how user-facing guidance is grounded (§7): e.g. show the KB procedure verbatim and let the
-   model only select it, or validate each instruction against the retrieved source.
-2. Multi-issue sessions (§8): product decision on splitting complaints and per-issue tickets.
-3. SDK resume after refresh and an expiry for abandoned sessions.
-4. Review and commit these fixes; run CI on GitHub for the first time; deploy (owner accounts).
-5. Count interrupted model calls against the session budget; consider durable jobs if cycles grow.
-6. Rehearse the demo in desktop Chrome.
+Items 1–3 and 5 of the original list (guidance step order, multi-issue sessions, SDK resume and
+session expiry, interrupted model calls) are done; see the completion pass at the top. Left:
+
+1. Run CI on GitHub for the first time and deploy (owner accounts).
+2. Rehearse the demo in desktop Chrome (load the extension by hand).
+3. Durable background jobs, if investigation cycles grow beyond one request.
 
 ## Reproduce
 

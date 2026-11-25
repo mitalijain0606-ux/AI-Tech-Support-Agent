@@ -1,6 +1,6 @@
 """Create, list and revoke Operon API keys.
 
-    python scripts/manage_keys.py create --tenant acme --subject alice [--role user] [--label laptop]
+    python scripts/manage_keys.py create --tenant acme --subject alice [--role user] [--label laptop] [--expires-days 90]
     python scripts/manage_keys.py list [--tenant acme]
     python scripts/manage_keys.py revoke <key-id>
 
@@ -12,11 +12,12 @@ Uses DATABASE_URL like the server does.
 
 import argparse
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from operon_backend.auth import ROLES, create_api_key, revoke_api_key  # noqa: E402
+from operon_backend.auth import ROLES, create_api_key, is_expired, revoke_api_key  # noqa: E402
 from operon_backend.db import SessionLocal, init_db  # noqa: E402
 from operon_backend.db_models import ApiKey  # noqa: E402
 
@@ -29,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
     create.add_argument("--subject", required=True)
     create.add_argument("--role", choices=ROLES, default="user")
     create.add_argument("--label")
+    create.add_argument("--expires-days", type=int, help="the key stops working after this many days")
     listing = sub.add_parser("list")
     listing.add_argument("--tenant")
     revoke = sub.add_parser("revoke")
@@ -39,9 +41,13 @@ def main(argv: list[str] | None = None) -> int:
     db = SessionLocal()
     try:
         if args.command == "create":
-            token, row = create_api_key(db, args.tenant, args.subject, args.role, args.label)
+            if args.expires_days is not None and args.expires_days < 1:
+                parser.error("--expires-days must be at least 1")
+            expires = datetime.now(UTC) + timedelta(days=args.expires_days) if args.expires_days else None
+            token, row = create_api_key(db, args.tenant, args.subject, args.role, args.label, expires)
             print(f"key id : {row.id}")
             print(f"tenant : {row.tenant_id}   subject: {row.subject}   role: {row.role}")
+            print(f"expires: {row.expires_at.isoformat() if row.expires_at else 'never'}")
             print(f"token  : {token}")
             print("Store this token now; it is not shown again.", file=sys.stderr)
         elif args.command == "list":
@@ -49,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.tenant:
                 query = query.filter(ApiKey.tenant_id == args.tenant)
             for row in query.order_by(ApiKey.created_at):
-                state = "revoked" if row.revoked_at else "active"
+                state = "revoked" if row.revoked_at else "expired" if is_expired(row) else "active"
                 print(f"{row.id}  {row.key_prefix}…  {row.tenant_id}/{row.subject}  {row.role}  {state}  {row.label or ''}")
         else:
             if not revoke_api_key(db, args.key_id):

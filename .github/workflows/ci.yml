@@ -166,3 +166,6 @@ jobs:
       - name: Demo journey through the SDK widget and the extension (NexaDesk)
         run: npm run e2e:journey
         working-directory: extension
+      - name: Browser E2E — multi-issue complaints, session expiry, admin key API
+        run: npm run e2e:completion
+        working-directory: extension

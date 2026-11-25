@@ -166,7 +166,7 @@ def probe_multi_issue(b, tok, report):
     d = sess["diagnoses"][-1]
     report["multi_issue"] = {"status": status, "phase": sess["phase"], "diagnosed_category": d.get("category"),
                              "cited": d.get("evidence_ids"), "proposed": (sess.get("pending_action") or {}).get("action_id"),
-                             "issue_fields_in_model": "single user_issue + one pending_action per session (no issue ids)"}
+                             "additional_issues": sess.get("additional_issues", [])}
 
 
 def probe_limits(b, tok, report):

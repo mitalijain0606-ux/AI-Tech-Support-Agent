@@ -16,9 +16,11 @@ A violation is a grounding problem like any other: the answer is regenerated onc
 stated, and a second failure fails the cycle safe (the session escalates; nothing is shown as
 authoritative guidance).
 
-Not covered (see docs/FEATURE_AUDIT_REPORT.md): step-by-step adherence to a multi-step knowledge
-procedure (mandatory steps and their order). Operon's actions come from a closed set and are
-verified server-side; the guidance text is explanatory.
+4. procedure order: when the guidance gives numbered steps and a cited knowledge entry has an
+   ordered procedure (a numbered list, or "Diagnostic steps: a; b; c"), every guidance step
+   that matches a procedure step must keep the procedure's order, and no procedure step may be
+   skipped between the first and the last one the guidance uses. Guidance steps that match no
+   procedure step (explanations) are allowed.
 """
 
 import re
@@ -53,6 +55,73 @@ def _contradicted_rules(text: str, knowledge_context: list[dict]) -> list[str]:
     return list(dict.fromkeys(found))
 
 
+_STOP = set("""a an the to of in on for and or is are be it this that your you with from by as at if then
+first next finally step steps after before when check make sure open go click""".split())
+_GUIDE_STEP = re.compile(r"(?:^|\n|\s)(?:step\s*)?(\d{1,2})[.):]\s+(.+?)(?=(?:\n|\s)(?:step\s*)?\d{1,2}[.):]\s|$)", re.I | re.S)
+_SEMI_LIST = re.compile(r"(?:Diagnostic steps|Remediation|Steps):\s*([^\n]+)", re.I)
+MATCH_THRESHOLD = 0.34
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z0-9_/.-]{3,}", text.lower()) if w not in _STOP}
+
+
+def _numbered(text: str) -> list[list[str]]:
+    """Every run of numbered items 1, 2, 3 ... in `text` (a new 1 starts a new list)."""
+    lists: list[list[str]] = []
+    for number, body in _GUIDE_STEP.findall(text or ""):
+        if int(number) == 1 or not lists:
+            lists.append([])
+        lists[-1].append(body.strip())
+    return [items for items in lists if len(items) >= 2]
+
+
+def _procedures(content: str) -> list[list[str]]:
+    found = _numbered(content)
+    for raw in _SEMI_LIST.findall(content or ""):
+        items = [i.strip() for i in raw.split(";") if i.strip()]
+        if len(items) >= 2:
+            found.append(items)
+    return found
+
+
+def _best_match(step: str, procedure: list[str]) -> int | None:
+    sw = _words(step)
+    best, best_score = None, 0.0
+    for i, kb_step in enumerate(procedure):
+        kw = _words(kb_step)
+        if not sw or not kw:
+            continue
+        score = len(sw & kw) / min(len(sw), len(kw))
+        if score > best_score:
+            best, best_score = i, score
+    return best if best_score >= MATCH_THRESHOLD else None
+
+
+def procedure_problems(text: str, cited_chunks: list[dict]) -> list[str]:
+    """Order and skipped-step violations of numbered guidance against cited procedures."""
+    guide_lists = _numbered(text)
+    if not guide_lists:
+        return []
+    steps = max(guide_lists, key=len)
+    problems = []
+    for chunk in cited_chunks:
+        for procedure in _procedures(str(chunk.get("content", ""))):
+            matches = [_best_match(step, procedure) for step in steps]
+            used = [m for m in matches if m is not None]
+            if len(used) < 2:
+                continue  # this procedure is not what the guidance follows
+            ref = chunk.get("chunk_id")
+            if any(b < a for a, b in zip(used, used[1:])):
+                order = " → ".join(str(m + 1) for m in used)
+                problems.append(f"Guidance steps are out of order against the procedure in {ref} (uses its steps {order})")
+            skipped = [i for i in range(min(used), max(used) + 1) if i not in used]
+            if skipped:
+                names = "; ".join(f"step {i + 1} ({procedure[i][:60]})" for i in skipped)
+                problems.append(f"Guidance skips required {names} of the procedure in {ref}")
+    return list(dict.fromkeys(problems))
+
+
 def guidance_problems(root_cause: str, reasoning: str, knowledge_context: list[dict] | None = None, cited_refs: list[str] | None = None) -> list[str]:
     """Every reason the free-text guidance may not be shown as-is. Empty means acceptable."""
     text = f"{root_cause}\n{reasoning}"
@@ -61,4 +130,5 @@ def guidance_problems(root_cause: str, reasoning: str, knowledge_context: list[d
         problems.append("Guidance claims certainty (guaranteed/100%/definitely); no fix is certain before it is verified")
     cited = [c for c in (knowledge_context or []) if c.get("chunk_id") in set(cited_refs or [])]
     problems += _contradicted_rules(text, cited)
+    problems += procedure_problems(text, cited)
     return problems

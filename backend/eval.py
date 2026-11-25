@@ -41,8 +41,14 @@ from operon_backend.stages import classify
 FIXTURES = Path(__file__).parent / "eval_data" / "fixtures.json"
 
 
-def load_fixtures(only: str | None = None) -> list[dict]:
-    data = json.loads(FIXTURES.read_text())
+HOLDOUT = Path(__file__).parent / "eval_data" / "holdout.json"
+
+
+def load_fixtures(only: str | None = None, fixture_set: str = "main") -> list[dict]:
+    path = {"main": FIXTURES, "holdout": HOLDOUT}[fixture_set] if fixture_set != "all" else None
+    if path is None:
+        return load_fixtures(only, "main") + load_fixtures(only, "holdout")
+    data = json.loads(path.read_text())
     return [f for f in data["fixtures"] if not only or only in f["id"]]
 
 
@@ -134,6 +140,8 @@ async def main(argv: list[str]) -> int:
     parser.add_argument("--pipeline", choices=["combined", "staged"], default=None, help="LLM pipeline (default: LLM_PIPELINE)")
     parser.add_argument("--delay", type=float, default=0.0, help="seconds to wait between fixtures (model rate limits)")
     parser.add_argument("--only", help="run fixtures whose id contains this text")
+    parser.add_argument("--set", choices=["main", "holdout", "all"], default="main",
+                        help="main: the fixtures written with the rules; holdout: the independent set; all: both")
     parser.add_argument("--out", help="write the full results as JSON to this path")
     args = parser.parse_args(argv)
 
@@ -144,7 +152,7 @@ async def main(argv: list[str]) -> int:
         return 2
     if args.pipeline:
         settings.llm_pipeline = args.pipeline
-    fixtures = load_fixtures(args.only)
+    fixtures = load_fixtures(args.only, args.set)
     if not fixtures:
         print("no fixtures matched", file=sys.stderr)
         return 2

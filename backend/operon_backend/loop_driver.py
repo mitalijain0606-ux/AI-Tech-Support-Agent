@@ -65,10 +65,13 @@ def check_limits(session: SessionRecord) -> LimitExceeded | None:
     return None
 
 
-def escalate(db: DBSession, session: SessionRecord, resolution_state: str, reason: str, guidance: str | None = None) -> SessionRecord:
+def escalate(
+    db: DBSession, session: SessionRecord, resolution_state: str, reason: str, guidance: str | None = None, *, hand_off: bool = True
+) -> SessionRecord:
     """The one way a session reaches ESCALATED: records why, preserves a
     summary of everything that happened, and saves it as history. Never
-    claims resolution. Commits."""
+    claims resolution. Commits. `hand_off=False` closes the session without a
+    ticket or a knowledge-base history entry (an abandoned session)."""
     if session.phase in TERMINAL_PHASES:
         return session
     last_verification = session.verification_state or None
@@ -93,13 +96,14 @@ def escalate(db: DBSession, session: SessionRecord, resolution_state: str, reaso
     # structured report (tickets.py), opened in the same transaction.
     from operon_backend.tickets import new_ticket_id, open_ticket  # local: tickets imports auth, which imports db
 
-    ticket_id = new_ticket_id(db, session)
+    ticket_id = new_ticket_id(db, session) if hand_off else None
     session.escalation_state["ticket_id"] = ticket_id
     transition(session, SessionPhase.ESCALATED, reason)
     record_activity(session, "escalated", reason, resolution_state=resolution_state, ticket_id=ticket_id)
-    tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
-    record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
-    open_ticket(db, session, ticket_id)
+    if hand_off:
+        tenant_id = (session.user_context or {}).get("tenant_id") if isinstance(session.user_context, dict) else None
+        record_resolved_session_to_kb(db, session, tenant_id=tenant_id)
+        open_ticket(db, session, ticket_id)
     db.commit()
     db.refresh(session)
     return session

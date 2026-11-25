@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     groq_model: str = "openai/gpt-oss-120b"
     # Per-request timeout for the Groq chat/completions call.
     groq_timeout_seconds: float = 30.0
+    # Groq answers 429 (rate limit) or 503 (overloaded) with a Retry-After header. Wait that
+    # long and try again, at most this many times, and only when the wait is short enough
+    # for a person watching the widget; otherwise fail at once with the reason.
+    groq_rate_limit_retries: int = 2
+    groq_rate_limit_max_wait_seconds: float = 20.0
+    # An unfinished session nobody has touched for this long is closed as expired
+    # (no ticket: an abandoned session is not a problem for support). 0 disables it.
+    session_idle_expiry_hours: float = 24.0
 
     # After the embedding model fails to load (no network, blocked host,
     # corrupt cache), don't retry the download for this long: retrieval is

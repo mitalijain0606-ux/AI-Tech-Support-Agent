@@ -22,6 +22,7 @@ from operon_backend.events import sse_stream
 from operon_backend.evidence import EvidenceRejected
 from operon_backend.investigation import run_cycle
 from operon_backend.knowledge import ensure_knowledge_base
+from operon_backend import keys_admin
 from operon_backend.llm import LLMError, diagnose
 from operon_backend.logging_config import RequestLogMiddleware, configure_logging
 from operon_backend.policy import evaluate
@@ -46,6 +47,8 @@ from operon_backend.session_service import (
     RequestMismatch,
     apply_policy,
     create_session,
+    expire_idle_sessions,
+    expire_if_idle,
     get_session,
     record_action_result,
     record_answer,
@@ -88,6 +91,19 @@ def check_configuration() -> None:
         raise RuntimeError("Refusing to start with an unsafe configuration: " + "; ".join(errors))
 
 
+def _expire_idle_sessions_at_startup() -> None:
+    db = SessionLocal()
+    try:
+        count = expire_idle_sessions(db)
+        if count:
+            logger.info("Expired %d idle, unfinished session(s)", count)
+    except Exception as exc:  # noqa: BLE001 — housekeeping must never stop the server starting
+        db.rollback()
+        logger.warning("Could not expire idle sessions (%s)", type(exc).__name__)
+    finally:
+        db.close()
+
+
 async def wait_for_knowledge_base(limit_seconds: float) -> bool:
     """Index the knowledge base, waiting at most `limit_seconds` before serving.
 
@@ -121,6 +137,7 @@ async def lifespan(app: FastAPI):
     configure_logging(settings.log_level, settings.log_format)
     check_configuration()
     init_db()
+    _expire_idle_sessions_at_startup()
     await wait_for_knowledge_base(settings.kb_startup_wait_seconds)
     yield
 
@@ -135,6 +152,7 @@ def api_docs_urls(environment: str) -> dict[str, str | None]:
 
 
 app = FastAPI(title="Operon Backend", lifespan=lifespan, **api_docs_urls(settings.environment))
+keys_admin.register(app)
 
 def configure_cors(target: FastAPI, origins: list[str]) -> None:
     """CORS applies to page JavaScript only. The extension is not subject to it
@@ -351,6 +369,7 @@ def _serialize(session: SessionRecord) -> SessionOut:
         approval=session.approval,
         verification_state=session.verification_state,
         escalation_state=session.escalation_state,
+        additional_issues=session.additional_issues or [],
         resolution_state=session.resolution_state,
         confidence=session.confidence or 0.0,
         phase_history=session.phase_history or [],
@@ -368,7 +387,8 @@ def _get_session_or_404(db: DBSession, session_id: str, principal: Principal, *,
     """The session, only if `principal` may see it (tenant and owner checked
     on the server). Anything else — absent, another tenant's, another user's —
     is the same 404."""
-    return require_session_access(get_session(db, session_id), principal, write=write, session_id=session_id)
+    session = require_session_access(get_session(db, session_id), principal, write=write, session_id=session_id)
+    return expire_if_idle(db, session)
 
 
 def _conflict(exc: Exception) -> JSONResponse:

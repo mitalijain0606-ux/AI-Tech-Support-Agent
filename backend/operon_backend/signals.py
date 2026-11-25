@@ -125,3 +125,29 @@ def question_problems(question: str) -> list[str]:
     if "\n\n\n" in text or any(ord(ch) < 32 and ch not in "\n\t" for ch in text):
         problems.append("the question contains control characters")
     return problems
+
+
+# ---- evidence predicates shared by the classifier, the understanding step and the engine ----
+
+_JSON_PARSE_FAILURE = re.compile(r"syntaxerror|is not valid json|unexpected (?:token|end of json)|json\.parse|failed to parse", re.I)
+
+
+def blocked_by_client(n) -> bool:
+    """A request a browser extension cancelled: status 0 with "blocked" in the status
+    text, or Chrome's net::ERR_BLOCKED_BY_CLIENT as the failure reason."""
+    return getattr(n, "status", None) == 0 and (
+        "blocked" in (getattr(n, "status_text", None) or "").lower()
+        or "err_blocked_by_client" in (getattr(n, "failure_reason", None) or "").lower()
+    )
+
+
+def json_parse_failure(text: str) -> bool:
+    return bool(_JSON_PARSE_FAILURE.search(text or ""))
+
+
+def corrupted_storage(storage, console_texts) -> list:
+    """Storage entries that are corrupted: a JSON syntax error always; a value that is
+    not JSON at all only when the page also failed to parse JSON (many apps store plain
+    strings on purpose)."""
+    parse_failed = any(json_parse_failure(t) for t in console_texts)
+    return [s for s in storage if s.present and (s.parse_status == "syntax_error" or (s.parse_status == "not_json" and parse_failed))]

@@ -86,3 +86,62 @@ def test_every_offline_engine_answer_passes_the_guidance_checks():
         d = _rule_based_diagnosis(f["issue"], EvidenceBundle.model_validate(f["bundle"]), f["available_actions"])
         assert guidance_problems(d.root_cause, d.reasoning) == [], (f["id"], d.reasoning)
     json.dumps({})
+
+
+# ---- procedure order: numbered guidance against a cited, ordered knowledge procedure ----------------
+
+PROC = [{"chunk_id": "kb_proc", "content": "Clearing a corrupted cache. 1. Open the site settings in the browser. "
+         "2. Find the stored data for the site. 3. Delete only the corrupted cache entry. "
+         "4. Reload the page and confirm the error is gone."}]
+ERR = [{"chunk_id": "err_scopes", "content": "GitHub Error: Forbidden\nDiagnostic steps: Check the token scopes; "
+        "Verify the SSO authorization; Retry the request with a new token"}]
+
+
+def test_guidance_that_follows_the_procedure_in_order_is_accepted():
+    text = "1. Open the site settings in your browser. 2. Find the stored data for this site. 3. Delete only the corrupted cache entry. 4. Reload the page."
+    assert guidance_problems("corrupted cache", text, PROC, ["kb_proc"]) == []
+
+
+def test_steps_out_of_order_are_named():
+    text = "1. Delete the corrupted cache entry. 2. Open the site settings in the browser. 3. Reload the page and confirm."
+    problems = guidance_problems("x", text, PROC, ["kb_proc"])
+    assert any("out of order" in p and "kb_proc" in p for p in problems)
+
+
+def test_a_skipped_required_step_is_named():
+    text = "1. Open the site settings in the browser. 2. Reload the page and confirm the error is gone."
+    problems = guidance_problems("x", text, PROC, ["kb_proc"])
+    assert any("skips required step 2" in p and "step 3" in p for p in problems)
+
+
+def test_semicolon_procedures_from_error_entries_are_checked_too():
+    problems = guidance_problems("x", "1. Retry the request with a new token. 2. Check the token scopes.", ERR, ["err_scopes"])
+    assert any("out of order" in p for p in problems)
+
+
+@pytest.mark.parametrize("text", [
+    "The cache entry is corrupted; clearing that one entry fixes the error.",  # no numbered steps
+    "1. Open the site settings in the browser. 2. Note the time. 3. Find the stored data for the site.",  # an extra, explanatory step
+    "1. Restart your computer. 2. Try again later.",  # matches no procedure step: not this procedure
+])
+def test_guidance_without_a_procedure_violation_is_accepted(text):
+    assert guidance_problems("x", text, PROC, ["kb_proc"]) == []
+
+
+def test_only_cited_procedures_are_checked():
+    text = "1. Delete the corrupted cache entry. 2. Open the site settings in the browser."
+    assert guidance_problems("x", text, PROC, []) == []
+
+
+@pytest.mark.asyncio
+async def test_an_out_of_order_answer_is_regenerated_and_the_ordered_one_used(monkeypatch):
+    kb = [{"chunk_id": "kb_proc", "content": PROC[0]["content"], "score": 0.9}]
+    bad = answer(evidence_ids=["ev_002"], action=CLEAR, refs=["kb_proc"]) | {
+        "reasoning": "1. Delete only the corrupted cache entry. 2. Open the site settings in the browser."}
+    good = answer(evidence_ids=["ev_002"], action=CLEAR, refs=["kb_proc"]) | {
+        "reasoning": "1. Open the site settings in the browser. 2. Find the stored data for the site. 3. Delete only the corrupted cache entry."}
+    fake = FakeGroq(monkeypatch, [bad, good])
+    run = await run_diagnosis("dashboard blank", BUNDLE, kb)
+    assert run.rejected and "out of order" in run.rejected[0][0]
+    assert run.diagnosis.reasoning.startswith("1. Open the site settings")
+    assert len(fake.calls) == 2

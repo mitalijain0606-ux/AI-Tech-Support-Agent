@@ -91,6 +91,7 @@ def build_report(session: SessionRecord) -> dict[str, Any]:
         "source": session.source,
         "created_at": session.created_at.isoformat() if session.created_at else None,
         "user_message": session.user_issue,
+        "additional_issues": session.additional_issues or [],
         "issue_category": session.issue_category,
         "confidence": session.confidence or 0.0,
         "escalation": {

@@ -12,12 +12,13 @@ evidence the plan cited — the provider only reports what it observed.
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session as DBSession
 
 from operon_backend.activity import record_activity
 from operon_backend.auth import ANONYMOUS, Principal
+from operon_backend.config import settings
 from operon_backend.db_models import SessionRecord
 from operon_backend.evidence import (
     DEFAULT_COLLECTORS,
@@ -28,9 +29,11 @@ from operon_backend.evidence import (
 )
 from operon_backend.events import emit_stage
 from operon_backend.investigation import next_cycle_blocked
+from operon_backend.issues import split_complaint
 from operon_backend.knowledge import record_resolved_session_to_kb
 from operon_backend.loop_driver import (
     MAX_ACTION_ATTEMPTS,
+    TERMINAL_PHASES,
     escalate,
     escalate_for_limit,
     update_or_create_hypothesis,
@@ -98,6 +101,14 @@ def create_session(
         investigation_cycle=0,
     )
     record_activity(record, "session_created", "support session created", redaction_applied=redactions, source=source)
+    problems = split_complaint(user_issue)
+    if len(problems) > 1:
+        # One problem per investigation: investigate the first, keep the rest for the user.
+        record.user_issue = problems[0]
+        record.additional_issues = [{"text": p, "source": "complaint"} for p in problems[1:]]
+        record_activity(record, "additional_issues",
+                        f"the complaint describes {len(problems)} problems; investigating the first, the others are kept for the user",
+                        count=len(problems) - 1)
     request, refused = build_request(
         record,
         purpose="initial",
@@ -120,6 +131,46 @@ def create_session(
 
 def get_session(db: DBSession, session_id: str) -> SessionRecord | None:
     return db.get(SessionRecord, session_id)
+
+
+EXPIRED_IDLE = "expired_idle"
+
+
+def idle_since(session: SessionRecord) -> datetime | None:
+    value = session.updated_at or session.created_at
+    if value is None:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
+
+
+def expire_if_idle(db: DBSession, session: SessionRecord, now: datetime | None = None) -> SessionRecord:
+    """Closes an unfinished session that has been idle longer than
+    `session_idle_expiry_hours`: it becomes ESCALATED with resolution `expired_idle`,
+    without a ticket. A pending fix can then no longer be approved or executed, which
+    is the point: an approval given a day later is not an informed one."""
+    hours = settings.session_idle_expiry_hours
+    if not hours or session.phase in TERMINAL_PHASES:
+        return session
+    since = idle_since(session)
+    if since is None or (now or datetime.now(UTC)) - since < timedelta(hours=hours):
+        return session
+    return escalate(
+        db, session, EXPIRED_IDLE,
+        f"This investigation expired after {hours:g} hours without activity. Nothing was changed; start a new one if the problem is still there.",
+        hand_off=False,
+    )
+
+
+def expire_idle_sessions(db: DBSession, now: datetime | None = None) -> int:
+    """Startup sweep: expires every idle, unfinished session. Returns how many."""
+    if not settings.session_idle_expiry_hours:
+        return 0
+    open_rows = db.query(SessionRecord).filter(SessionRecord.phase.notin_(TERMINAL_PHASES)).all()
+    expired = 0
+    for row in open_rows:
+        if expire_if_idle(db, row, now).phase == SessionPhase.ESCALATED.value and row.resolution_state == EXPIRED_IDLE:
+            expired += 1
+    return expired
 
 
 def require_phase(session: SessionRecord, expected: SessionPhase) -> None:

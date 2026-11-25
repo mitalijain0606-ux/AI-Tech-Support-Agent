@@ -180,7 +180,7 @@ INVESTIGATING         → HYPOTHESIS_FORMED | KNOWLEDGE_LOOKUP   (new evidence �
 HYPOTHESIS_FORMED     → DIAGNOSING | INVESTIGATING     (hypothesis needs more evidence)
 DIAGNOSING            → ACTION_PROPOSED | ESCALATED    (insufficient_evidence-style outcome)
 ACTION_PROPOSED       → WAITING_FOR_APPROVAL | EXECUTING   (policy ALLOW skips approval)
-WAITING_FOR_APPROVAL  → EXECUTING | RESOLVED           (user denies → back to idle/resolved-as-declined)
+WAITING_FOR_APPROVAL  → EXECUTING | RESOLVED | ESCALATED  (user denies → resolved-as-declined; idle too long → expired)
 EXECUTING             → VERIFYING
 VERIFYING             → RESOLVED | INVESTIGATING | ESCALATED
 ```

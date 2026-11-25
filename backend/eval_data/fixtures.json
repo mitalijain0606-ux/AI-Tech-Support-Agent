@@ -717,6 +717,108 @@
     ]
    },
    "note": "console text as captured from Buggy Cloud"
+  },
+  {
+   "id": "storage-not-json-with-parse-error",
+   "app": "generic",
+   "issue": "the sidebar layout is all wrong since yesterday",
+   "available_actions": [
+    "clear_storage_key",
+    "reload",
+    "inspect_page"
+   ],
+   "bundle": {
+    "url": "https://crm.example.test/home",
+    "timestamp": 1,
+    "console": [
+     {
+      "id": "ev_c1",
+      "level": "error",
+      "text": "Failed to parse layout state: SyntaxError: Unexpected token 'u', \"undefined\" is not valid JSON"
+     }
+    ],
+    "storage": [
+     {
+      "id": "ev_s1",
+      "key": "layout_state",
+      "present": true,
+      "parse_status": "not_json"
+     }
+    ]
+   },
+   "expected": {
+    "category": "storage_corruption",
+    "action_id": "clear_storage_key",
+    "params": {
+     "key": "layout_state"
+    },
+    "cites_any_of": [
+     "ev_s1",
+     "ev_c1"
+    ]
+   },
+   "note": "found by the held-out set: not_json + a JSON parse failure is corruption"
+  },
+  {
+   "id": "blocked-by-client-failure-reason",
+   "app": "generic",
+   "issue": "the chat widget never appears",
+   "available_actions": [
+    "clear_storage_key",
+    "reload",
+    "inspect_page"
+   ],
+   "bundle": {
+    "url": "https://support.example.test/",
+    "timestamp": 1,
+    "network": [
+     {
+      "id": "ev_n1",
+      "method": "GET",
+      "url": "https://widget.chatvendor.test/loader.js",
+      "status": 0,
+      "failure_reason": "net::ERR_BLOCKED_BY_CLIENT"
+     }
+    ]
+   },
+   "expected": {
+    "category": "blocked_by_client",
+    "action_id": null,
+    "params": null,
+    "cites_any_of": [
+     "ev_n1"
+    ]
+   },
+   "note": "found by the held-out set: Chrome reports blocking in failure_reason"
+  },
+  {
+   "id": "storage-plain-string-is-fine",
+   "app": "generic",
+   "issue": "the page looks odd",
+   "available_actions": [
+    "clear_storage_key",
+    "reload",
+    "inspect_page"
+   ],
+   "bundle": {
+    "url": "https://app.example.test/",
+    "timestamp": 1,
+    "storage": [
+     {
+      "id": "ev_s1",
+      "key": "last_tab",
+      "present": true,
+      "parse_status": "not_json"
+     }
+    ]
+   },
+   "expected": {
+    "category": "insufficient_evidence",
+    "action_id": null,
+    "params": null,
+    "cites_any_of": []
+   },
+   "note": "a plain string in storage is normal: without a JSON parse failure it is not corruption"
   }
  ]
 }

@@ -23,6 +23,9 @@ from typing import Any
 from sqlalchemy.orm import Session as DBSession
 from starlette.concurrency import run_in_threadpool
 
+from operon_backend.inflight import count_interrupted, model_call
+from operon_backend.issues import merge as merge_issues
+from operon_backend.issues import uncited_faults
 from operon_backend.activity import record_activity
 from operon_backend.budget import budget_evidence
 from operon_backend.config import settings
@@ -211,6 +214,7 @@ async def run_cycle(db: DBSession, session: SessionRecord, bundle: EvidenceBundl
         raise IllegalTransition(
             f"Evidence can only be submitted in UNDERSTANDING or NEED_INFORMATION, session is in {session.phase}"
         )
+    count_interrupted(db, session)  # a previous cycle's model call that a restart cut off
     limit = check_limits(session)
     if limit:
         escalate_for_limit(db, session, limit)
@@ -270,15 +274,16 @@ async def run_cycle(db: DBSession, session: SessionRecord, bundle: EvidenceBundl
     emit_stage(session.id, "diagnose", "started")
     knowledge_context = [{"chunk_id": c.chunk_id, "content": c.content_text, "score": round(c.score, 3)} for c in chunks]
     try:
-        run = await run_diagnosis(
-            session.user_issue,
-            window,
-            knowledge_context,
-            history=investigation_history(session),
-            understanding=understanding,
-            available_collectors=allowed_collectors(session, list(COLLECTORS))[0],
-            available_actions=_available_actions(session),
-        )
+        with model_call(db, session.id):
+            run = await run_diagnosis(
+                session.user_issue,
+                window,
+                knowledge_context,
+                history=investigation_history(session),
+                understanding=understanding,
+                available_collectors=allowed_collectors(session, list(COLLECTORS))[0],
+                available_actions=_available_actions(session),
+            )
     except UngroundedDiagnosis as exc:
         session.llm_call_count = (session.llm_call_count or 0) + exc.llm_calls
         session.diagnoses = [
@@ -303,6 +308,13 @@ async def run_cycle(db: DBSession, session: SessionRecord, bundle: EvidenceBundl
 
     diagnosis = run.diagnosis
     session.llm_call_count = (session.llm_call_count or 0) + run.llm_calls
+    faults = uncited_faults(understanding, diagnosis.evidence_ids, diagnosis.category)
+    if faults:
+        merged = merge_issues(session.additional_issues, faults)
+        if len(merged) > len(session.additional_issues or []):
+            session.additional_issues = merged
+            record_activity(session, "additional_issues", f"{len(faults)} failing request(s) in the evidence are not explained by this diagnosis",
+                            evidence_ids=[f["evidence_id"] for f in faults])
     session.confidence = diagnosis.confidence
     session.issue_category = diagnosis.category
     session.knowledge_references = list(diagnosis.knowledge_refs)

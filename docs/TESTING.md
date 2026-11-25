@@ -194,8 +194,10 @@ errors.
 
 ## Known limitations
 
-- Groq's free tier (8,000 tokens/min) can rate-limit a multi-cycle session.
-  The session isn't damaged, but the user sees an error and must retry.
+- Groq's free tier (8,000 tokens/min) can rate-limit a multi-cycle session. A 429/503
+  is retried after the wait Groq asks for (at most `GROQ_RATE_LIMIT_RETRIES` times, waits
+  up to `GROQ_RATE_LIMIT_MAX_WAIT_SECONDS`); beyond that the user sees an error and can retry.
+  The session isn't damaged.
 - If the embedding model can't load at startup, the KB stays empty until the
   next restart with the model reachable (retrieval says `empty_index` until
   then).

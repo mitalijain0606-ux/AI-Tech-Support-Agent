@@ -123,21 +123,22 @@ fixture on a small set; treat them as a sanity check, not a benchmark.
 
 ## Remaining work, in priority order
 
-1. **Owner actions** (blocked on credentials): create the Neon database and the
-   Render service, mint the first API key, build the extension with
-   `OPERON_BACKEND_URL`, run `docs/DEMO_REHEARSAL.md` against it; push the branch so
-   CI runs for the first time and fix whatever it finds.
-2. **Review and commit** the 2026-10-14 pass (uncommitted; earlier work is in `d5b9002`).
-3. Key management beyond the CLI: rotation, expiry, an admin API.
-4. A larger, independently written evaluation set (the current 21 fixtures were
-   written alongside the rules and prompt) and a recorded Groq baseline over
-   several runs.
-5. Browser coverage: only Chromium is exercised; Edge/Firefox are untested.
-6. More SDK actions (each needs a backend policy entry, a closed-list entry in
-   the extension and the SDK, verification, and tests); a published SDK package.
-7. Learning loop evaluation (does the history of resolved sessions improve later
-   diagnoses?), and per-tenant knowledge curation.
-8. The GitHub API agent — separate product, not started.
+Completed on 2026-11-25 (see "Completion pass" in `FEATURE_AUDIT_REPORT.md`): key expiry and
+the admin key API (rotation, revocation), Groq rate-limit retries, idle-session expiry,
+multi-issue complaints, procedure-order checks on guidance, interrupted model calls counted
+against the session budget, and an independent held-out evaluation set.
+
+1. **Owner actions** (need your accounts): create the Neon database and the Render service,
+   mint the first admin key, build the extension with `OPERON_BACKEND_URL`, run
+   `docs/DEMO_REHEARSAL.md` against it; push the branch so CI runs on GitHub for the first time.
+2. A recorded Groq baseline over several runs of both evaluation sets (the free tier's
+   tokens-per-minute limit makes one run slow; use `eval.py --engine groq --set all --delay 8`).
+3. Browser coverage: only Chromium is exercised; Edge/Firefox are untested.
+4. More SDK actions (each needs a backend policy entry, a closed-list entry in the extension and
+   the SDK, verification, and tests); a published SDK package.
+5. Learning-loop evaluation (does the history of resolved sessions improve later diagnoses?),
+   and per-tenant knowledge curation.
+6. The GitHub API agent — a separate product, not started.
 
 ## Progress log
 

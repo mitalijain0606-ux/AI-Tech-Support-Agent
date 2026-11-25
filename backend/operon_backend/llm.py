@@ -15,7 +15,9 @@ exactly one regeneration with the problems stated; a second failure raises
 UngroundedDiagnosis so the caller can fail safe.
 """
 
+import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -35,6 +37,8 @@ from operon_backend.schemas import (
 from operon_backend.signals import normalise, question_problems
 from operon_backend.stages import Classification, classify
 from operon_backend.tripwire import redact_credentials
+
+logger = logging.getLogger(__name__)
 
 # The actions every target can perform. A target that registers more (the
 # Buggy Cloud SDK adds reset_user_preference) says so per request, and only
@@ -110,7 +114,8 @@ RULES:
 5d. You may add ONE short plain-language "question" to an information_request
    when only the user can supply a missing fact. Never ask for passwords, tokens,
    keys, codes or card details; never include links. Questions are optional.
-6. A network entry with status 0 and status_text mentioning "blocked" means a
+6. A network entry with status 0 and status_text mentioning "blocked" (or a
+   failure_reason of net::ERR_BLOCKED_BY_CLIENT) means a
    browser extension (ad blocker / privacy tool) cancelled the request. Operon
    cannot change other extensions: category "blocked_by_client", no action, and
    explain what the user should check.
@@ -374,36 +379,62 @@ def _rule_based_diagnosis(
 # ---- Groq engine ----------------------------------------------------------------------
 
 
+RETRYABLE_STATUS = (429, 503)
+
+
+def _retry_after_seconds(response: httpx.Response, attempt: int) -> float:
+    """How long the service asked us to wait (Retry-After seconds), else a short backoff."""
+    raw = (response.headers.get("retry-after") or "").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 2.0 * (2 ** attempt)
+
+
 async def _call_groq(messages: list[dict[str, str]]) -> str:
-    """The one network call to the model. Returns the raw JSON text."""
+    """The one network call to the model. Returns the raw JSON text.
+
+    A rate limit (429) or an overload (503) is retried after the wait the service asks
+    for, at most `groq_rate_limit_retries` times and only while that wait is within
+    `groq_rate_limit_max_wait_seconds`; anything else fails at once."""
     timeout = settings.groq_timeout_seconds
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                GROQ_API_URL,
-                headers={
-                    "Authorization": f"Bearer {settings.groq_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": settings.groq_model,
-                    "messages": messages,
-                    "temperature": 0.1,
-                    "response_format": {"type": "json_object"},
-                },
-            )
-    except httpx.TimeoutException as e:
-        raise LLMError(f"The model did not answer within {timeout:g}s (timeout)") from e
-    except Exception as e:  # any other transport failure becomes an LLMError
-        raise LLMError(f"Failed to reach the model: {type(e).__name__}") from e
-    if response.status_code != 200:
-        hint = f", retry after {response.headers['retry-after']}s" if response.headers.get("retry-after") else ""
-        body = redact_credentials(response.text[:300])[0]
-        raise LLMError(f"Groq API error (status {response.status_code}{hint}): {body}")
-    try:
-        return response.json()["choices"][0]["message"]["content"]
-    except Exception as e:
-        raise LLMError(f"Unexpected Groq response shape: {type(e).__name__}") from e
+    attempt = 0
+    while True:
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    GROQ_API_URL,
+                    headers={
+                        "Authorization": f"Bearer {settings.groq_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": settings.groq_model,
+                        "messages": messages,
+                        "temperature": 0.1,
+                        "response_format": {"type": "json_object"},
+                    },
+                )
+        except httpx.TimeoutException as e:
+            raise LLMError(f"The model did not answer within {timeout:g}s (timeout)") from e
+        except Exception as e:  # any other transport failure becomes an LLMError
+            raise LLMError(f"Failed to reach the model: {type(e).__name__}") from e
+        if response.status_code in RETRYABLE_STATUS and attempt < settings.groq_rate_limit_retries:
+            wait = _retry_after_seconds(response, attempt)
+            if wait <= settings.groq_rate_limit_max_wait_seconds:
+                logger.warning("Groq answered %s; retrying in %.1fs (retry %d of %d)", response.status_code, wait, attempt + 1, settings.groq_rate_limit_retries)
+                await asyncio.sleep(wait)
+                attempt += 1
+                continue
+        if response.status_code != 200:
+            hint = f", retry after {response.headers['retry-after']}s" if response.headers.get("retry-after") else ""
+            retried = f" after {attempt} retr{'y' if attempt == 1 else 'ies'}" if attempt else ""
+            body = redact_credentials(response.text[:300])[0]
+            raise LLMError(f"Groq API error (status {response.status_code}{hint}){retried}: {body}")
+        try:
+            return response.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            raise LLMError(f"Unexpected Groq response shape: {type(e).__name__}") from e
 
 
 def build_user_content(

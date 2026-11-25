@@ -347,6 +347,8 @@ class SessionOut(BaseModel):
     approval: dict[str, Any] | None = None
     verification_state: dict[str, Any] | None = None
     escalation_state: dict[str, Any] | None = None
+    # Other problems in the same complaint or the evidence; each needs its own investigation.
+    additional_issues: list[dict[str, Any]] = Field(default_factory=list)
     resolution_state: str | None = None
     confidence: float = 0.0
     phase_history: list[dict[str, Any]] = Field(default_factory=list)

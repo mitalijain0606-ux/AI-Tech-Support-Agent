@@ -16,14 +16,81 @@ policy gate, a real fix in the live tab, and a real re-observation.
 The main demo target is **NexaDesk** ([`buggy-cloud/`](buggy-cloud/)), a realistic SaaS app with
 eight reproducible faults, a presenter **demo console** (`/demo`) and the Operon **support widget**
 built on the SDK ([`sdk/`](sdk/)); the same scenarios also run through the extension. **Running the
-demo: [`docs/HACKATHON_DEMO_GUIDE.md`](docs/HACKATHON_DEMO_GUIDE.md).** What exists, what is verified
-and what is left: [`docs/FEATURE_AUDIT_REPORT.md`](docs/FEATURE_AUDIT_REPORT.md) and
-[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md).
+demo: [`docs/HACKATHON_DEMO_GUIDE.md`](docs/HACKATHON_DEMO_GUIDE.md).** Feature-by-feature
+verification evidence is in [`docs/FEATURE_AUDIT_REPORT.md`](docs/FEATURE_AUDIT_REPORT.md).
 
-Planning and phase tracking live in [`docs/`](docs/). How every part is
-tested, and what has actually been validated against real services, is in
+How every part is tested, and what has been validated against real services, is in
 [`docs/TESTING.md`](docs/TESTING.md). The investigation design is in
 [`AGENT_ARCHITECTURE.md`](AGENT_ARCHITECTURE.md).
+
+## Why Operon
+
+When a web app breaks for one user, support usually starts with a vague report
+("the dates are missing"). Reproducing it means back-and-forth for screenshots,
+console logs and browser details, and the cause is often state that only exists
+in that user's browser: a corrupted saved setting, an invalid preference, a stale
+service worker. Fixes get suggested as generic steps ("clear all your data"),
+and nobody checks afterwards whether the problem is actually gone.
+
+Operon collects the evidence itself, explains the likely root cause with the
+evidence it is based on, proposes one narrow fix, runs it only with the user's
+approval, and confirms the result on the server. Problems it cannot fix from the
+browser, such as a failing API, are handed to a person as a ticket that already
+contains everything collected.
+
+## Features
+
+- **Evidence collection on request.** Console errors, failed network requests,
+  storage and cookie *metadata*, page state and a reload observation, collected
+  only when the backend asks for them, and redacted before upload.
+- **Diagnosis with cited evidence.** Each diagnosis names the root cause, the
+  evidence it relies on and the knowledge-base entries it used. It comes from a
+  Groq-hosted model when `GROQ_API_KEY` is set, or from a deterministic offline
+  rule-based engine otherwise. Every diagnosis records which engine produced it.
+  A Groq rate limit (429) or overload (503) is retried after the wait Groq asks
+  for, within set bounds.
+- **Grounded guidance.** The explanation shown to the user is checked for dangerous
+  instructions, certainty claims, contradictions of the cited knowledge, and — when
+  it gives numbered steps — the order and completeness of the cited procedure.
+- **Knowledge retrieval.** A curated troubleshooting knowledge base
+  ([`docs/knowledge-base/`](docs/knowledge-base/)) is searched with local
+  MiniLM embeddings (`fastembed`), with pgvector support on Postgres.
+- **Approval-gated fixes.** Fixes come from a closed set of actions, pass a
+  server-side policy check, and destructive ones run only after the user approves.
+  Approval can be declined; nothing changes.
+- **Server-side verification and retries.** After a fix, the page is observed
+  again and the backend decides whether the cited problem is gone. A failed fix
+  is retried with a different one, or escalated.
+- **One problem at a time, none lost.** A complaint describing several problems is
+  split: Operon investigates the first and lists the others for the user to report
+  separately. A failing request in the evidence that the diagnosis does not explain
+  is listed the same way.
+- **Escalation tickets and a support dashboard.** A structured, redacted report
+  for a human, with a read-only dashboard and a local reproduction tool.
+- **Two ways in.** A Chrome extension for any configured site, and an SDK with a
+  support widget for apps you control (including session recovery after a page
+  reload).
+- **Live progress.** Investigation stages and activity are streamed to the
+  popup and widget (Server-Sent Events).
+- **Multi-tenant API.** API keys with user, viewer and admin roles, optional key
+  expiry, an admin API to list, create, rotate and revoke keys, tenant isolation,
+  rate limits and request-size limits.
+- **Bounded sessions.** Every session has budgets (cycles, evidence, model calls —
+  including a call cut off by a backend restart), and an unfinished session left
+  idle expires without changing anything.
+
+## Architecture
+
+| Component | Responsibility | Technology |
+|---|---|---|
+| Backend ([`backend/`](backend/)) | Sessions and their state machine, evidence requests, retrieval, diagnosis and grounding checks, policy, verification, escalation tickets, key management, the support dashboard | Python, FastAPI, SQLAlchemy, Alembic; SQLite or Postgres (+ pgvector); optional Redis for rate limits and events; `fastembed`; optional Groq API |
+| Chrome extension ([`extension/`](extension/)) | Collects the evidence the backend asks for (via `chrome.debugger`), redacts it, shows the popup, executes an approved action on the investigated tab only | Manifest V3, TypeScript, React, esbuild |
+| SDK ([`sdk/`](sdk/)) | The same session flow for a site that embeds Operon; the site registers which fixes it supports | Plain JavaScript with TypeScript declarations |
+| NexaDesk ([`buggy-cloud/`](buggy-cloud/)) | Demo SaaS app with eight reproducible faults, the SDK support widget and a presenter console | Plain JavaScript modules, Node static/mock-API server |
+
+The backend is the authority: the extension and the SDK only collect what they
+are asked for and run what was approved, and the backend decides the diagnosis,
+the policy and the verification result.
 
 ## How a session works
 
@@ -86,7 +153,7 @@ backend/                 FastAPI + SQLAlchemy (SQLite, or Postgres + pgvector)
   operon_backend/        session_service, investigation, stages (classify), evidence,
                          planning, verification, policy, auth, ratelimit, events,
                          tripwire, llm, retrieval, embeddings, knowledge, ...
-  migrations/            Alembic (baseline + pgvector)
+  migrations/            Alembic (baseline, pgvector, tickets, session version, key expiry / idle sessions)
   scripts/               manage_keys.py, seed_kb.py, validate_services.py, warm_model.py
   eval.py, eval_data/    measured evaluation against ground-truth fixtures
   tests/                 offline suite; tests/live/ for real Groq / embeddings
@@ -95,11 +162,12 @@ extension/               MV3, TypeScript + React, esbuild per target
   targets/               github.json (real), e2e-local.json (local fixtures), fake-saas.json (unset)
   tests/                 node:test unit tests against the real bundled source
   e2e/                   browser E2E: local suite, github.com demo, Buggy Cloud
-sdk/                     Operon SDK for sites you control: client (init/diagnose/decide), shared redaction, types, build
-buggy-cloud/             the second application: 7 seeded bugs
+sdk/                     Operon SDK for sites you control: client (init/diagnose/resume/answer/decide), shared redaction, types, build
+buggy-cloud/             NexaDesk, the demo SaaS app: 8 reproducible scenarios, support widget, /demo console
+scripts/                 dev-local.mjs (one-command local stack), reproduce-ticket.mjs
 docs/                    IMPLEMENTATION_STATUS, DEPLOYMENT, DEMO_REHEARSAL, SDK_VS_EXTENSION,
                          TESTING, plan/, knowledge-base/, archive/
-render.yaml, .github/    deployment blueprint (never deployed) and CI (never run on GitHub)
+render.yaml, .github/    Render deployment blueprint and CI workflow
 ```
 
 [`PROJECT_STRUCTURE.md`](PROJECT_STRUCTURE.md) has the per-file breakdown.
@@ -136,7 +204,10 @@ curl localhost:8000/health        # {"status":"ok"}
 | `MIN_ACTION_CONFIDENCE` | `0.5` | a diagnosis less confident than this escalates to a human instead of proposing a fix |
 | `MAX_REQUEST_BODY_BYTES` | `2000000` | larger request bodies are refused with 413 before they are read |
 | `EVIDENCE_TOKEN_BUDGET` | `8000` | approximate token cap on the evidence shown to the model per cycle |
+| `GROQ_RATE_LIMIT_RETRIES` / `GROQ_RATE_LIMIT_MAX_WAIT_SECONDS` | `2` / `20` | on a Groq 429/503, how many times to retry and the longest wait accepted |
 | `EMBEDDING_RETRY_COOLDOWN_SECONDS` | `60` | after the embedding model fails to load, how long before trying again |
+| `KB_STARTUP_WAIT_SECONDS` | `30` | how long startup waits for knowledge-base indexing before it starts serving anyway |
+| `SESSION_IDLE_EXPIRY_HOURS` | `24` | an unfinished session idle this long is closed as expired (`0` disables) |
 | `DATABASE_URL` | `sqlite:///./operon.db` | any SQLAlchemy URL; for Postgres run `alembic upgrade head` first |
 | `AUTH_REQUIRED` | `true` (also in `.env.example`) | API keys (`python scripts/manage_keys.py create …`) pasted into the popup under *Backend access*. Set `false` only for throwaway local experiments; `ENVIRONMENT=production` refuses to start without auth |
 | `ENVIRONMENT` | `development` | `production` refuses an unsafe configuration |
@@ -151,8 +222,10 @@ access to `huggingface.co` and its download hosts (`*.hf.co`).
 **The knowledge base is indexed automatically at startup.** On a database
 with no curated knowledge chunks, the backend indexes the curated KB before
 it starts serving. That takes a few seconds, plus the model download on a
-cold cache. An already-indexed knowledge base is left untouched, so a restart
-never duplicates, re-embeds or overwrites anything.
+cold cache; if it takes longer than `KB_STARTUP_WAIT_SECONDS`, the backend
+starts serving and finishes indexing in the background. An already-indexed
+knowledge base is left untouched, so a restart never duplicates, re-embeds or
+overwrites anything.
 
 If the model can't be loaded at startup, the backend still starts and logs
 `Knowledge base not initialized`. Each investigation then records retrieval
@@ -186,11 +259,12 @@ npx tsc --noEmit -p .                   # typecheck
 npm run e2e                             # built extension + real backend + Chromium, local fixtures
 npm run e2e:github                      # same, against a real public github.com page (read-only)
 npm run e2e:demo                        # the approve / deny demo on a real github.com page
-npm run e2e:buggy                       # the second app through the extension: 7 seeded bugs
+npm run e2e:buggy                       # NexaDesk through the extension: every scenario
 npm run e2e:sdk                         # the same app through the SDK (no extension)
 npm run e2e:sdk-wire                    # SDK request bytes: fake secrets must not appear
 npm run e2e:wire                        # fake secrets typed into the popup never reach the network (recording proxy)
 npm run e2e:journey                     # the hackathon demo journey through the SDK widget AND the extension
+npm run e2e:completion                  # multi-issue complaints, session expiry, admin key API (real browser)
 npm run e2e:screens                     # NexaDesk's screens under every seeded scenario
 npm run e2e:dashboard                   # escalation tickets in the read-only support dashboard (XSS, isolation)
 npm run e2e:reproduce                   # sandbox reproduction of escalated tickets
@@ -198,6 +272,7 @@ npm run e2e:github-escalation           # real 404 / 401 from github.com escalat
 cd ../sdk && npm test                   # SDK unit tests
 cd .. && node --test scripts/tests/*.test.mjs        # reproduction tool unit tests
 cd backend && python eval.py --engine offline       # measured evaluation (--engine groq [--pipeline staged] for the model)
+python eval.py --engine offline --set holdout       # the independently written held-out set (--set all: both)
 ```
 
 ## Escalation tickets and the support dashboard
@@ -226,10 +301,25 @@ result and the timeline.
 What each suite covers, what is stubbed, and the latest validation results
 are in [`docs/TESTING.md`](docs/TESTING.md).
 
-## Status
+## API keys
 
-The authoritative table, with evidence and what was *not* verified, is
-[`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md). In short:
-the investigation core, auth/tenancy, live progress, Postgres/Redis support,
-the second app and the evaluation are implemented and tested locally; the
-Render deployment and the CI workflow are written but **have never been run**.
+`python scripts/manage_keys.py create --tenant <t> --subject <s> --role admin [--expires-days 90]`
+creates the first admin key (the token is printed once; only its hash is stored). After
+that, a tenant's admins manage keys over the API:
+
+| Call | What it does |
+|---|---|
+| `GET /api/admin/keys` | the tenant's keys: subject, role, label, state (active / expired / revoked), dates — never a token or hash |
+| `POST /api/admin/keys` `{subject, role, label?, expires_in_days?}` | a new key; the token is in the response, once |
+| `POST /api/admin/keys/{id}/rotate` `{expires_in_days?}` | a new key with the same identity; the old one is revoked in the same step |
+| `POST /api/admin/keys/{id}/revoke` | stops the key at once |
+
+Only admin keys may call these, only for their own tenant (another tenant's key id is the
+same 404 as an unknown one), and an admin cannot revoke or rotate the key it is using.
+
+## Deployment
+
+Operon runs locally today. A Render blueprint ([`render.yaml`](render.yaml)) and
+the production configuration it expects (Postgres, auth, CORS, rate limits) are
+described in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md); there is no hosted
+instance.
