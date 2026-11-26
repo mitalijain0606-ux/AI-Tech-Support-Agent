@@ -1,17 +1,26 @@
-.console { max-width: 1180px; margin: 0 auto; padding: 24px 24px 48px; display: flex; flex-direction: column; gap: 20px; }
-.console-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
-.console-head h1 { font-size: 22px; }
-.console-head p { margin: 4px 0 0; color: var(--text-2); max-width: 720px; }
-.presenter-only { background: var(--warning-soft); color: var(--warning); border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 700; }
-.scenarios { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
-.scenario { display: flex; flex-direction: column; gap: 10px; }
-.scenario header { display: flex; gap: 10px; align-items: flex-start; }
-.scenario .num { flex: none; width: 28px; height: 28px; border-radius: 8px; background: var(--primary-soft); color: var(--primary); display: grid; place-items: center; font-weight: 700; }
-.scenario h2 { font-size: 15px; margin: 0; }
-.scenario dl { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: 13px; }
-.scenario dt { color: var(--text-3); }
+.console { max-width: 1200px; margin: 0 auto; padding: 0 24px 56px; display: flex; flex-direction: column; gap: 20px; }
+.console-head { position: relative; display: flex; align-items: flex-end; gap: 16px; flex-wrap: wrap; margin: 0 -24px; padding: 36px 24px 28px; color: #fff; background: var(--grad-ink); border-radius: 0 0 24px 24px; overflow: hidden; box-shadow: var(--shadow-lg); }
+.console-head::after { content: ""; position: absolute; inset: 0; pointer-events: none; background-image: radial-gradient(rgba(255, 255, 255, .07) 1px, transparent 1px); background-size: 16px 16px; mask-image: linear-gradient(180deg, #000, transparent 90%); }
+.console-head > * { position: relative; z-index: 1; }
+.console-head h1 { font-size: 26px; color: #fff; letter-spacing: -.02em; }
+.console-head p { margin: 8px 0 0; color: #c9c6ee; max-width: 720px; }
+.console-head .btn:not(.primary) { background: rgba(255, 255, 255, .1); border-color: rgba(255, 255, 255, .18); color: #fff; box-shadow: none; }
+.console-head .btn:not(.primary):hover { background: rgba(255, 255, 255, .18); }
+.presenter-only { background: rgba(251, 191, 36, .16); color: #fcd34d; border: 1px solid rgba(251, 191, 36, .35); border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 700; }
+.scenarios { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 16px; }
+.scenario { display: flex; flex-direction: column; gap: 12px; transition: transform .15s, box-shadow .15s, border-color .15s; }
+.scenario:hover { transform: translateY(-2px); border-color: rgba(109, 94, 252, .35); box-shadow: 0 2px 4px rgba(14, 16, 36, .04), 0 18px 40px -18px rgba(23, 19, 74, .35); }
+.scenario[data-status="active"] { border-color: rgba(220, 38, 38, .3); }
+.scenario[data-status="fixed"] { border-color: rgba(5, 150, 105, .3); }
+.scenario header { display: flex; gap: 12px; align-items: flex-start; }
+.scenario .num { flex: none; width: 34px; height: 34px; border-radius: 11px; background: var(--grad-brand); color: #fff; display: grid; place-items: center; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .25), 0 6px 14px -6px rgba(109, 94, 252, .8); }
+.scenario h2 { font-size: 15.5px; margin: 0; }
+.scenario header .muted { font-family: var(--mono); font-size: 12px; }
+.scenario dl { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 6px 12px; margin: 0; font-size: 13px; padding-top: 12px; border-top: 1px solid var(--border); }
+.scenario dt { color: var(--text-3); font-weight: 500; }
 .scenario dd { margin: 0; overflow-wrap: anywhere; }
 .scenario .badge { white-space: normal; }
-.scenario .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; }
-.steps { margin: 0; padding-left: 20px; color: var(--text-2); }
-.steps li { margin: 4px 0; }
+.scenario .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: auto; padding-top: 4px; }
+.steps { margin: 0; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 10px; color: var(--text-2); }
+.steps li { counter-increment: step; display: flex; gap: 12px; align-items: flex-start; margin: 0; }
+.steps li::before { content: counter(step); flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #5b4ae6; background: #f1efff; box-shadow: inset 0 0 0 1px rgba(109, 94, 252, .25); }

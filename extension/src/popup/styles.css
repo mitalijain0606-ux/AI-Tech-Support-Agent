@@ -1,1 +1,60 @@
 @import "tailwindcss";
+
+/* Operon popup — design tokens and the few effects utilities can't express cleanly. */
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --color-ink: #0b0b1f;
+  --color-ink-2: #14123a;
+  --color-brand: #6d5efc;
+  --color-brand-2: #8b5cf6;
+  --color-brand-soft: #efedff;
+  --color-cyan: #22d3ee;
+  --color-canvas: #f6f6fb;
+}
+
+html, body { margin: 0; background: var(--color-canvas); }
+body { -webkit-font-smoothing: antialiased; font-feature-settings: "cv11", "ss01"; }
+
+.op-hero {
+  background:
+    radial-gradient(120% 140% at 100% 0%, rgba(139, 92, 246, .55) 0%, rgba(139, 92, 246, 0) 55%),
+    radial-gradient(90% 120% at 0% 100%, rgba(34, 211, 238, .22) 0%, rgba(34, 211, 238, 0) 60%),
+    linear-gradient(160deg, #0b0b1f 0%, #17134a 100%);
+}
+.op-hero::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, .07) 1px, transparent 1px);
+  background-size: 14px 14px;
+  mask-image: linear-gradient(180deg, #000 0%, transparent 85%);
+}
+.op-gradient-btn {
+  background-image: linear-gradient(135deg, #6d5efc 0%, #8b5cf6 55%, #a855f7 100%);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .25) inset, 0 8px 20px -8px rgba(109, 94, 252, .75);
+}
+.op-gradient-btn:hover:not(:disabled) { filter: brightness(1.07); box-shadow: 0 1px 0 rgba(255, 255, 255, .25) inset, 0 10px 24px -8px rgba(109, 94, 252, .9); }
+.op-card { box-shadow: 0 1px 2px rgba(15, 12, 50, .04), 0 6px 20px -12px rgba(15, 12, 50, .18); }
+.op-ring-grad {
+  background: conic-gradient(from 0deg, #6d5efc, #22d3ee, #a855f7, #6d5efc);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+}
+.op-halo { background: radial-gradient(closest-side, rgba(109, 94, 252, .22), rgba(109, 94, 252, 0)); }
+.op-halo-ok { background: radial-gradient(closest-side, rgba(16, 185, 129, .25), rgba(16, 185, 129, 0)); }
+.op-halo-warn { background: radial-gradient(closest-side, rgba(245, 158, 11, .25), rgba(245, 158, 11, 0)); }
+.op-halo-bad { background: radial-gradient(closest-side, rgba(239, 68, 68, .22), rgba(239, 68, 68, 0)); }
+.op-meter > span { background-image: linear-gradient(90deg, #6d5efc, #22d3ee); }
+
+@keyframes op-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
+@keyframes op-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes op-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.op-pulse { animation: op-pulse 1.6s ease-in-out infinite; }
+.op-float { animation: op-float 3s ease-in-out infinite; }
+.op-in { animation: op-in .28s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .op-pulse, .op-float, .op-in, .animate-spin { animation: none !important; }
+}
+
+details > summary { list-style: none; }
+details > summary::-webkit-details-marker { display: none; }
+details[open] .op-chevron { transform: rotate(90deg); }
