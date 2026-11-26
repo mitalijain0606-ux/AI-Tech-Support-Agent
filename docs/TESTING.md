@@ -141,6 +141,7 @@ access then allowed `api.groq.com`, `huggingface.co` and its download hosts.
 | ruff | 4 findings, all present before this milestone, none new |
 | KB lint | ok: 19 sources, 17 error entries, 14 tools |
 | pip-audit (2026-10-04) | no known vulnerabilities |
+| pip-audit (2026-11-26) | 42 Pillow 12.3.0 findings accepted (fix needs Pillow 13, which fastembed 0.9.1 does not allow; Operon never decodes images); see `backend/pip-audit-ignore.txt`. certifi, filelock, opentelemetry-api upgraded |
 | npm audit (2026-10-04) | 4 high findings, all present before this milestone and dev-only: `braces`/`micromatch` via the Tailwind CLI's file watcher (`@tailwindcss/cli` → `@parcel/watcher`). They're used only at build time and not shipped in the extension. |
 
 ### Real services
