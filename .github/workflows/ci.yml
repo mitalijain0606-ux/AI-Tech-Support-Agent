@@ -108,7 +108,8 @@ jobs:
 
   browser-e2e:
     # The built extension, in Chromium, against a real backend process.
-    runs-on: ubuntu-latest
+    # Pinned: Playwright 1.56 can't install Chromium's system deps on ubuntu-latest (26.04).
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     needs: [backend, extension]
     env:
