@@ -98,6 +98,7 @@ jobs:
         run: |
           node --check sdk/operon-sdk.js && node --check sdk/redact.js
           extension/node_modules/.bin/tsc --noEmit --strict --module esnext --moduleResolution bundler --target es2022 --skipLibCheck sdk/operon-sdk.d.ts sdk/redact.d.ts
+        working-directory: .
       - name: Ticket-reproduction tool unit tests
         run: node --test scripts/tests/*.test.mjs
         working-directory: .
