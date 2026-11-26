@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ExtensionState, PopupCommand, ViewPhase } from "../lib/types";
-import { AlertIcon, BeakerIcon, CheckIcon, EscalateIcon } from "./icons";
+import { AlertIcon, ArrowIcon, BeakerIcon, ChatIcon, CheckIcon, EscalateIcon, KeyIcon, LogoMark, SearchIcon, ShieldIcon, SparkIcon, WrenchIcon } from "./icons";
 
 declare const __OPERON_BACKEND_URL__: string;
 
@@ -53,11 +53,11 @@ const VERIFY: Record<string, string> = {
 function Button({ children, onClick, variant = "secondary", disabled = false, full = false }: {
   children: React.ReactNode; onClick: () => void; variant?: "primary" | "secondary" | "quiet"; disabled?: boolean; full?: boolean;
 }) {
-  const base = "text-[12.5px] font-semibold rounded-lg px-3 py-2 transition-colors disabled:cursor-not-allowed disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1d4ed8]";
+  const base = "inline-flex items-center justify-center gap-1.5 text-[12.5px] font-semibold rounded-xl px-3.5 py-2.5 transition-all duration-150 active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-40 disabled:shadow-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand";
   const variants =
-    variant === "primary" ? "bg-[#1d4ed8] text-white hover:bg-[#1e40af]"
-    : variant === "quiet" ? "text-[#475569] hover:text-[#0f172a]"
-    : "bg-white text-[#0f172a] border border-[#cfd7e3] hover:bg-[#f0f3f9]";
+    variant === "primary" ? "op-gradient-btn text-white"
+    : variant === "quiet" ? "text-slate-500 hover:text-slate-900"
+    : "bg-white text-slate-800 ring-1 ring-slate-900/10 shadow-sm hover:bg-slate-50 hover:ring-slate-900/20";
   return (
     <button onClick={onClick} disabled={disabled} className={`${base} ${variants} ${full ? "flex-1" : ""}`}>
       {children}
@@ -65,22 +65,39 @@ function Button({ children, onClick, variant = "secondary", disabled = false, fu
   );
 }
 
-function Spinner() {
-  return <span className="inline-block h-5 w-5 animate-spin rounded-full border-2 border-[#1d4ed8] border-r-transparent motion-reduce:animate-none" aria-hidden />;
-}
-
 function Chip({ children }: { children: React.ReactNode }) {
-  return <span className="inline-block rounded-md bg-[#f0f3f9] px-1.5 py-0.5 font-mono text-[10px] text-[#475569]">{children}</span>;
+  return <span className="inline-block rounded-md bg-brand-soft px-1.5 py-0.5 font-mono text-[10px] font-medium text-[#4f46e5] ring-1 ring-inset ring-[#6d5efc]/15">{children}</span>;
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, icon, tone = "default", children }: { title: string; icon?: React.ReactNode; tone?: "default" | "brand"; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border border-[#e3e8f0] bg-[#fbfcfe] p-3">
-      <p className="mb-1 text-[10.5px] font-bold uppercase tracking-wide text-[#64748b]">{title}</p>
+    <div className={`op-card op-in rounded-2xl bg-white p-3.5 ring-1 ${tone === "brand" ? "ring-[#6d5efc]/25" : "ring-slate-900/[.06]"}`}>
+      <div className="mb-1.5 flex items-center gap-1.5">
+        {icon && <span className="grid h-5 w-5 place-items-center rounded-md bg-brand-soft text-brand">{icon}</span>}
+        <p className="text-[10.5px] font-bold uppercase tracking-[.08em] text-slate-500">{title}</p>
+      </div>
       {children}
     </div>
   );
 }
+
+function Fact({ children }: { children: React.ReactNode }) {
+  return (
+    <li className="flex gap-2 text-[11.5px] leading-snug text-slate-600">
+      <CheckIcon className="mt-px h-3.5 w-3.5 shrink-0 text-emerald-500" />
+      <span>{children}</span>
+    </li>
+  );
+}
+
+// The stages of one investigation, for the busy-state stepper.
+const STEPS: { phase: ViewPhase; label: string }[] = [
+  { phase: "collecting", label: "Collect" },
+  { phase: "investigating", label: "Diagnose" },
+  { phase: "checking_policy", label: "Policy" },
+  { phase: "executing", label: "Fix" },
+  { phase: "verifying", label: "Verify" },
+];
 
 function hostOf(url: string | null | undefined): string | null {
   try {
@@ -142,68 +159,109 @@ export function App() {
   const recentActivity = (session?.activity ?? []).slice(-8);
   const targetHost = hostOf(state.targetOrigin) ?? activeHost;
   const phaseTone =
-    state.phase === "resolved" ? "bg-[#e7f6ef] text-[#047857]"
-    : state.phase === "escalated" || state.phase === "awaiting_approval" ? "bg-[#fdf3e2] text-[#b45309]"
-    : state.phase === "error" ? "bg-[#fdecec] text-[#b91c1c]"
-    : busy ? "bg-[#e8efff] text-[#1d4ed8]"
-    : "bg-[#f0f3f9] text-[#475569]";
+    state.phase === "resolved" ? "bg-emerald-400/15 text-emerald-200 ring-emerald-300/30"
+    : state.phase === "escalated" || state.phase === "awaiting_approval" ? "bg-amber-400/15 text-amber-200 ring-amber-300/30"
+    : state.phase === "error" ? "bg-rose-500/15 text-rose-200 ring-rose-300/30"
+    : busy ? "bg-[#8b5cf6]/25 text-violet-100 ring-violet-300/30"
+    : "bg-white/10 text-slate-200 ring-white/15";
+  const phaseDot =
+    state.phase === "resolved" ? "bg-emerald-300"
+    : state.phase === "escalated" || state.phase === "awaiting_approval" ? "bg-amber-300"
+    : state.phase === "error" ? "bg-rose-300"
+    : busy ? "bg-violet-200"
+    : "bg-slate-300";
+  const stepIndex = STEPS.findIndex((s) => s.phase === state.phase);
+  const confidence = Math.round((session?.confidence ?? 0) * 100);
 
   return (
-    <div className="w-[380px] bg-white text-[#0f172a]">
-      <header className="flex items-center justify-between bg-[#0b1f4b] px-4 py-3 text-white">
-        <div className="flex items-center gap-2.5">
-          <span className="grid h-7 w-7 place-items-center rounded-lg bg-gradient-to-br from-[#60a5fa] to-[#2563eb] text-[13px] font-extrabold">O</span>
-          <div className="leading-tight">
-            <p className="text-[13.5px] font-semibold">Operon</p>
-            <p className="text-[10.5px] text-[#a5b4d8]">AI technical support</p>
+    <div className="w-[380px] bg-canvas font-sans text-slate-900">
+      <div className="op-hero relative overflow-hidden px-4 pb-3 pt-3.5 text-white">
+        <header className="relative z-10 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <span className="grid h-9 w-9 place-items-center rounded-xl bg-white/10 shadow-[inset_0_1px_0_rgba(255,255,255,.15)] ring-1 ring-white/15 backdrop-blur">
+              <LogoMark className="h-6 w-6" />
+            </span>
+            <div className="leading-tight">
+              <p className="text-[15px] font-semibold tracking-[-.01em]">Operon</p>
+              <p className="text-[10.5px] font-medium text-violet-200/80">AI technical support</p>
+            </div>
           </div>
-        </div>
-        <span className={`rounded-full px-2 py-0.5 text-[10.5px] font-bold ${phaseTone}`} aria-live="polite">
-          {PHASE_LABEL[state.phase]}
-        </span>
-      </header>
-
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-[#e3e8f0] bg-[#f5f7fb] px-4 py-2 text-[11px] text-[#475569]">
-        <span className="flex items-center gap-1.5" title={__OPERON_BACKEND_URL__}>
-          <span className={`h-2 w-2 rounded-full ${backend === "online" ? "bg-[#047857]" : backend === "offline" ? "bg-[#b91c1c]" : "bg-[#94a3b8]"}`} />
-          {backend === "online" ? "Backend connected" : backend === "offline" ? "Backend unreachable" : "Checking backend…"}
-        </span>
-        <span>{state.tokenSet ? "Access token saved" : "No access token"}</span>
-        {targetHost && (
-          <span className="truncate" title={state.targetOrigin ?? undefined}>
-            {state.targetOrigin ? "Investigating" : "Site"}: <span className="font-medium text-[#0f172a]">{targetHost}</span>
+          <span className={`flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10.5px] font-semibold ring-1 backdrop-blur ${phaseTone}`} aria-live="polite">
+            <span className={`h-1.5 w-1.5 rounded-full ${phaseDot} ${busy ? "op-pulse" : ""}`} aria-hidden />
+            {PHASE_LABEL[state.phase]}
           </span>
-        )}
+        </header>
+
+        <div className="relative z-10 mt-3 flex flex-wrap items-center gap-1.5 text-[10.5px] font-medium text-slate-200">
+          <span className="flex items-center gap-1.5 rounded-full bg-white/[.07] px-2 py-0.5 ring-1 ring-white/10" title={__OPERON_BACKEND_URL__}>
+            <span className={`h-1.5 w-1.5 rounded-full ${backend === "online" ? "bg-emerald-400 shadow-[0_0_6px_#34d399]" : backend === "offline" ? "bg-rose-400" : "bg-slate-400"}`} />
+            {backend === "online" ? "Backend connected" : backend === "offline" ? "Backend unreachable" : "Checking backend…"}
+          </span>
+          <span className="flex items-center gap-1 rounded-full bg-white/[.07] px-2 py-0.5 ring-1 ring-white/10">
+            <KeyIcon className="h-3 w-3 opacity-80" />
+            {state.tokenSet ? "Access token saved" : "No access token"}
+          </span>
+          {targetHost && (
+            <span className="flex min-w-0 max-w-full items-center gap-1 truncate rounded-full bg-white/[.07] px-2 py-0.5 ring-1 ring-white/10" title={state.targetOrigin ?? undefined}>
+              {state.targetOrigin ? "Investigating" : "Site"}: <span className="truncate font-semibold text-white">{targetHost}</span>
+            </span>
+          )}
+        </div>
       </div>
 
       <main className="min-h-[220px] px-4 py-4">
         {(state.phase === "idle" || state.phase === "seeded") && (
-          <div className="flex flex-col gap-3">
-            <p className="text-[12.5px] leading-relaxed text-[#475569]">
-              Describe what's wrong on this page. Operon collects diagnostic evidence from this tab, explains the cause and proposes a fix — nothing changes without your approval.
-            </p>
-            {state.phase === "seeded" && <p className="rounded-md bg-[#fdf3e2] px-2.5 py-1.5 text-[12px] text-[#b45309]">Demo bug seeded on this tab.</p>}
-            <textarea
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              rows={3}
-              aria-label="Describe the problem"
-              placeholder="e.g. The dashboard shows an error instead of my projects"
-              className="resize-none rounded-lg border border-[#cfd7e3] bg-white p-2.5 text-[13px] text-[#0f172a] placeholder-[#94a3b8] outline-none focus:border-[#1d4ed8] focus:ring-2 focus:ring-[#e8efff]"
-            />
-            <div className="flex gap-2">
-              <Button variant="secondary" onClick={() => send({ type: "SEED_BUG" })}>
-                <span className="flex items-center gap-1.5">
+          <div className="op-in flex flex-col gap-3">
+            <div>
+              <h1 className="text-[17px] font-semibold tracking-[-.015em] text-slate-900">What's going wrong?</h1>
+              <p className="mt-1 text-[12px] leading-relaxed text-slate-500">
+                Describe what's wrong on this page. Operon collects diagnostic evidence from this tab, explains the cause and proposes a fix — nothing changes without your approval.
+              </p>
+            </div>
+            {state.phase === "seeded" && (
+              <p className="flex items-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-800 ring-1 ring-amber-200/70">
+                <BeakerIcon className="h-4 w-4 shrink-0" />
+                Demo bug seeded on this tab.
+              </p>
+            )}
+            <div className="op-card rounded-2xl bg-white p-1 ring-1 ring-slate-900/[.08] transition focus-within:ring-2 focus-within:ring-brand/60">
+              <textarea
+                value={message}
+                onChange={(e) => setMessage(e.target.value)}
+                rows={3}
+                aria-label="Describe the problem"
+                placeholder="e.g. The dashboard shows an error instead of my projects"
+                className="block w-full resize-none rounded-xl bg-transparent px-2.5 py-2 text-[13px] leading-relaxed text-slate-900 placeholder-slate-400 outline-none"
+              />
+              <div className="flex items-center justify-between gap-2 px-1 pb-1">
+                <Button variant="quiet" onClick={() => send({ type: "SEED_BUG" })}>
                   <BeakerIcon className="h-3.5 w-3.5" />
                   Seed demo bug
-                </span>
-              </Button>
-              <Button variant="primary" full disabled={!message.trim()} onClick={() => send({ type: "ASK_OPERON", message: message.trim() })}>
-                Ask Operon
-              </Button>
+                </Button>
+                <Button variant="primary" disabled={!message.trim()} onClick={() => send({ type: "ASK_OPERON", message: message.trim() })}>
+                  <SparkIcon className="h-3.5 w-3.5" />
+                  Ask Operon
+                </Button>
+              </div>
             </div>
-            <details className="text-[11.5px] text-[#64748b]">
-              <summary className="cursor-pointer select-none">Backend access {state.tokenSet ? "· token saved" : "· no token"}</summary>
+            <ul className="grid grid-cols-3 gap-2" aria-label="How Operon works">
+              {[
+                { icon: <SearchIcon className="h-3.5 w-3.5" />, title: "Evidence", text: "Reads this tab, redacted" },
+                { icon: <ShieldIcon className="h-3.5 w-3.5" />, title: "Your call", text: "Fixes need approval" },
+                { icon: <CheckIcon className="h-3.5 w-3.5" />, title: "Verified", text: "Checked on the server" },
+              ].map((f) => (
+                <li key={f.title} className="rounded-xl bg-white/70 p-2 ring-1 ring-slate-900/[.05]">
+                  <span className="grid h-6 w-6 place-items-center rounded-lg bg-brand-soft text-brand">{f.icon}</span>
+                  <p className="mt-1.5 text-[11px] font-semibold text-slate-800">{f.title}</p>
+                  <p className="text-[10px] leading-snug text-slate-500">{f.text}</p>
+                </li>
+              ))}
+            </ul>
+            <details className="group rounded-xl bg-white/70 px-3 py-2 text-[11.5px] text-slate-500 ring-1 ring-slate-900/[.05]">
+              <summary className="flex cursor-pointer select-none items-center gap-1.5 font-medium">
+                <ArrowIcon className="op-chevron h-3 w-3 transition-transform" />
+                Backend access {state.tokenSet ? "· token saved" : "· no token"}
+              </summary>
               <div className="mt-2 flex gap-2">
                 <input
                   type="password"
@@ -212,7 +270,7 @@ export function App() {
                   onChange={(e) => setToken(e.target.value)}
                   placeholder={state.tokenSet ? "Replace the saved token" : "Paste your access token"}
                   aria-label="Backend access token"
-                  className="min-w-0 flex-1 rounded-md border border-[#cfd7e3] bg-white px-2 py-1.5 font-mono text-[11px] outline-none focus:border-[#1d4ed8]"
+                  className="min-w-0 flex-1 rounded-lg bg-white px-2.5 py-1.5 font-mono text-[11px] text-slate-800 outline-none ring-1 ring-slate-900/10 focus:ring-2 focus:ring-brand/60"
                 />
                 <Button
                   variant="secondary"
@@ -229,17 +287,40 @@ export function App() {
         )}
 
         {busy && (
-          <div className="flex min-h-[188px] flex-col items-center justify-center gap-3 text-center">
-            <Spinner />
-            <p className="text-[13px] font-semibold text-[#0f172a]">{BUSY_TEXT[state.phase] ?? PHASE_LABEL[state.phase]}…</p>
+          <div className="op-in flex min-h-[188px] flex-col items-center justify-center gap-3 text-center">
+            <div className="relative grid h-16 w-16 place-items-center">
+              <span className="op-halo absolute -inset-4 rounded-full" aria-hidden />
+              <span className="op-ring-grad absolute inset-0 animate-spin rounded-full [animation-duration:1.4s]" aria-hidden />
+              <span className="grid h-11 w-11 place-items-center rounded-full bg-white shadow-md ring-1 ring-slate-900/5">
+                <LogoMark className="op-float h-7 w-7 [&_circle:nth-of-type(2)]:fill-[#6d5efc] [&_ellipse]:stroke-[#6d5efc]" />
+              </span>
+            </div>
+            <p className="text-[13.5px] font-semibold text-slate-900">{BUSY_TEXT[state.phase] ?? PHASE_LABEL[state.phase]}…</p>
             {state.phase === "collecting" && (
-              <p className="max-w-[280px] text-[11.5px] text-[#64748b]">Watching this tab for a few seconds — if you can, reproduce the issue now.</p>
+              <p className="-mt-1.5 max-w-[280px] text-[11.5px] text-slate-500">Watching this tab for a few seconds — if you can, reproduce the issue now.</p>
+            )}
+            {stepIndex >= 0 && (
+              <ol className="flex w-full max-w-[330px] items-center" aria-hidden>
+                {STEPS.map((s, i) => (
+                  <li key={s.phase} className="flex flex-1 flex-col items-center gap-1">
+                    <span className="flex w-full items-center">
+                      <span className={`h-px flex-1 ${i === 0 ? "opacity-0" : i <= stepIndex ? "bg-brand" : "bg-slate-200"}`} />
+                      <span className={`grid h-4 w-4 place-items-center rounded-full text-[8px] font-bold ${i < stepIndex ? "bg-brand text-white" : i === stepIndex ? "bg-white text-brand ring-2 ring-brand" : "bg-white text-slate-400 ring-1 ring-slate-300"}`}>
+                        {i < stepIndex ? "✓" : i + 1}
+                      </span>
+                      <span className={`h-px flex-1 ${i === STEPS.length - 1 ? "opacity-0" : i < stepIndex ? "bg-brand" : "bg-slate-200"}`} />
+                    </span>
+                    <span className={`text-[9.5px] font-semibold ${i === stepIndex ? "text-brand" : "text-slate-400"}`}>{s.label}</span>
+                  </li>
+                ))}
+              </ol>
             )}
             {state.progress && state.progress.length > 0 && (
-              <ol aria-label="Live progress" className="w-full max-w-[330px] space-y-0.5 rounded-lg bg-[#f5f7fb] p-2 text-left">
-                {state.progress.map((line) => (
-                  <li key={line.id} className="truncate font-mono text-[10.5px] leading-snug text-[#475569]">
-                    {line.text}
+              <ol aria-label="Live progress" className="w-full max-w-[340px] space-y-1 rounded-xl bg-ink p-2.5 text-left shadow-inner ring-1 ring-white/5">
+                {state.progress.map((line, n) => (
+                  <li key={line.id} className="flex items-center gap-1.5 truncate font-mono text-[10.5px] leading-snug text-slate-300">
+                    <span className={n === state.progress!.length - 1 ? "op-pulse text-cyan" : "text-emerald-400"} aria-hidden>{n === state.progress!.length - 1 ? "›" : "✓"}</span>
+                    <span className="truncate">{line.text}</span>
                   </li>
                 ))}
               </ol>
@@ -249,26 +330,26 @@ export function App() {
 
         {state.phase === "needs_more_evidence" && (
           <div className="flex flex-col gap-3">
-            <Section title={evidenceRequest?.purpose === "retry" ? "That didn't fix it — looking again" : "Operon needs more information"}>
-              <p className="text-[12.5px] leading-relaxed text-[#334155]">{state.message}</p>
+            <Section icon={<SearchIcon className="h-3 w-3" />} title={evidenceRequest?.purpose === "retry" ? "That didn't fix it — looking again" : "Operon needs more information"}>
+              <p className="text-[12.5px] leading-relaxed text-slate-700">{state.message}</p>
               {evidenceRequest && (
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <span className="text-[10.5px] font-semibold text-[#64748b]">Will collect</span>
+                  <span className="text-[10.5px] font-semibold text-slate-500">Will collect</span>
                   {evidenceRequest.collectors.map((c) => <Chip key={c}>{c}</Chip>)}
                 </div>
               )}
-              {currentHypothesis && <p className="mt-2 text-[11.5px] text-[#64748b]">Working hypothesis ({currentHypothesis.status}): {currentHypothesis.description}</p>}
+              {currentHypothesis && <p className="mt-2 rounded-lg bg-slate-50 px-2 py-1.5 text-[11.5px] text-slate-500">Working hypothesis ({currentHypothesis.status}): {currentHypothesis.description}</p>}
             </Section>
             {evidenceRequest?.question && (
-              <Section title="Question">
-                <p className="text-[12.5px] font-medium text-[#0f172a]">{evidenceRequest.question}</p>
+              <Section icon={<ChatIcon className="h-3 w-3" />} title="Question" tone="brand">
+                <p className="text-[12.5px] font-medium text-slate-900">{evidenceRequest.question}</p>
                 {answered ? (
-                  <p className="mt-1.5 text-[11.5px] text-[#64748b]">Thanks — your answer will be used in the next step.</p>
+                  <p className="mt-1.5 text-[11.5px] text-slate-500">Thanks — your answer will be used in the next step.</p>
                 ) : (
-                  <>
+                  <div className="mt-2 flex flex-col gap-2">
                     <textarea
                       aria-label="Your answer"
-                      className="mt-2 h-14 w-full resize-none rounded-md border border-[#cfd7e3] p-2 text-[12px]"
+                      className="h-14 w-full resize-none rounded-lg bg-white p-2 text-[12px] outline-none ring-1 ring-slate-900/10 focus:ring-2 focus:ring-brand/60"
                       maxLength={1000}
                       placeholder="Optional — never include passwords or tokens"
                       value={answer}
@@ -283,12 +364,12 @@ export function App() {
                     >
                       Send answer
                     </Button>
-                  </>
+                  </div>
                 )}
               </Section>
             )}
             {evidenceRequest?.requires_user_action && (
-              <p className="text-[11.5px] text-[#64748b]">Reproduce the problem in the investigated tab, then continue — Operon will watch for a few seconds.</p>
+              <p className="rounded-xl bg-violet-50 px-3 py-2 text-[11.5px] text-violet-900 ring-1 ring-violet-200/60">Reproduce the problem in the investigated tab, then continue — Operon will watch for a few seconds.</p>
             )}
             <div className="flex gap-2">
               <Button variant="secondary" onClick={() => send({ type: "RESET" })}>Reset</Button>
@@ -301,36 +382,46 @@ export function App() {
           const action = describeAction(pending.action_id, pending.parameters);
           return (
             <div className="flex flex-col gap-3">
-              <Section title="What's wrong">
-                <p className="text-[13px] font-semibold text-[#0f172a]">{state.diagnosis?.root_cause ?? pending.diagnosis}</p>
-                <p className="mt-1 text-[12px] leading-relaxed text-[#475569]">{state.diagnosis?.reasoning ?? pending.expected_effect}</p>
+              <Section icon={<SearchIcon className="h-3 w-3" />} title="What's wrong">
+                <p className="text-[13.5px] font-semibold leading-snug tracking-[-.01em] text-slate-900">{state.diagnosis?.root_cause ?? pending.diagnosis}</p>
+                <p className="mt-1 text-[12px] leading-relaxed text-slate-600">{state.diagnosis?.reasoning ?? pending.expected_effect}</p>
+                <div className="mt-2.5 flex items-center gap-2">
+                  <span className="text-[10.5px] font-semibold text-slate-500">Confidence {confidence}%</span>
+                  <span className="op-meter h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100" aria-hidden>
+                    <span className="block h-full rounded-full" style={{ width: `${confidence}%` }} />
+                  </span>
+                </div>
                 <div className="mt-2 flex flex-wrap items-center gap-1.5">
-                  <span className="text-[10.5px] font-semibold text-[#64748b]">Evidence</span>
+                  <span className="text-[10.5px] font-semibold text-slate-500">Evidence</span>
                   {pending.evidence_ids.map((id) => <Chip key={id}>{id}</Chip>)}
                 </div>
                 {state.diagnosis && state.diagnosis.knowledge_refs.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                    <span className="text-[10.5px] font-semibold text-[#64748b]">Knowledge</span>
+                    <span className="text-[10.5px] font-semibold text-slate-500">Knowledge</span>
                     {state.diagnosis.knowledge_refs.map((id) => <Chip key={id}>{id}</Chip>)}
                   </div>
                 )}
-                <p className="mt-2 text-[11px] text-[#64748b]">Confidence {Math.round((session?.confidence ?? 0) * 100)}%</p>
               </Section>
-              <Section title="Proposed fix">
-                <p className="text-[12.5px] font-semibold text-[#0f172a]">{action.title}</p>
-                <p className="mt-0.5 text-[12px] text-[#475569]">{action.body}</p>
-                <p className="mt-1.5 font-mono text-[11px] text-[#64748b]">
+              <Section icon={<WrenchIcon className="h-3 w-3" />} title="Proposed fix" tone="brand">
+                <p className="text-[13px] font-semibold text-slate-900">{action.title}</p>
+                <p className="mt-0.5 text-[12px] leading-relaxed text-slate-600">{action.body}</p>
+                <p className="mt-2 overflow-x-auto whitespace-nowrap rounded-lg bg-ink px-2.5 py-1.5 font-mono text-[10.5px] text-violet-200">
                   {pending.action_id} {Object.keys(pending.parameters).length > 0 && JSON.stringify(pending.parameters)}
                 </p>
-                <ul className="mt-2 list-disc space-y-0.5 pl-4 text-[11.5px] text-[#475569]">
-                  <li>{action.changes ? "Changes data this site stored in your browser." : "Does not change any data."}</li>
-                  <li>Runs only on {state.targetOrigin ? hostOf(state.targetOrigin) : "the investigated tab"}, only if you approve.</li>
-                  {pending.verification && <li>Afterwards Operon {VERIFY[pending.verification.strategy] ?? pending.verification.strategy.replace(/_/g, " ")}.</li>}
-                  {pending.attempt > 1 && <li>Attempt {pending.attempt} — previous attempt: {pending.retry_reason}</li>}
+                <ul className="mt-2.5 space-y-1">
+                  <Fact>{action.changes ? "Changes data this site stored in your browser." : "Does not change any data."}</Fact>
+                  <Fact>Runs only on {state.targetOrigin ? hostOf(state.targetOrigin) : "the investigated tab"}, only if you approve.</Fact>
+                  {pending.verification && <Fact>Afterwards Operon {VERIFY[pending.verification.strategy] ?? pending.verification.strategy.replace(/_/g, " ")}.</Fact>}
+                  {pending.attempt > 1 && <Fact>Attempt {pending.attempt} — previous attempt: {pending.retry_reason}</Fact>}
                 </ul>
-                {state.policy && <p className="mt-1.5 text-[11px] text-[#64748b]">Policy: {state.policy.reason}</p>}
+                {state.policy && (
+                  <p className="mt-2.5 flex items-start gap-1.5 border-t border-slate-100 pt-2 text-[11px] text-slate-500">
+                    <ShieldIcon className="mt-px h-3.5 w-3.5 shrink-0 text-brand" />
+                    <span>Policy: {state.policy.reason}</span>
+                  </p>
+                )}
               </Section>
-              <div className="flex gap-2">
+              <div className="sticky bottom-0 -mx-4 flex gap-2 bg-gradient-to-t from-canvas via-canvas to-canvas/0 px-4 pb-1 pt-3">
                 <Button variant="secondary" full onClick={() => send({ type: "DENY" })}>Deny</Button>
                 <Button variant="primary" full onClick={() => send({ type: "APPROVE" })}>Approve</Button>
               </div>
@@ -338,41 +429,61 @@ export function App() {
           );
         })()}
 
-        {(state.phase === "resolved" || state.phase === "escalated" || state.phase === "error") && (
-          <div className="flex min-h-[150px] flex-col items-center justify-center gap-3 text-center">
-            {state.phase === "resolved" && session?.resolution_state !== "declined_by_user" && <CheckIcon className="h-8 w-8 text-[#047857]" />}
-            {state.phase === "escalated" && <EscalateIcon className="h-8 w-8 text-[#b45309]" />}
-            {state.phase === "error" && <AlertIcon className="h-8 w-8 text-[#b91c1c]" />}
-            <p className="text-[13px] font-semibold">
-              {state.phase === "resolved"
-                ? session?.resolution_state === "declined_by_user" ? "Fix declined — nothing was changed" : "Fixed and verified"
-                : state.phase === "escalated"
-                  ? session?.resolution_state === "expired_idle" ? "Expired — nothing was changed" : "Handed to the support team"
-                  : "Something went wrong"}
-            </p>
-            <p className="max-w-[310px] whitespace-pre-line text-[12px] leading-relaxed text-[#475569]">{state.message || state.diagnosis?.reasoning || "Done."}</p>
-            <Button variant="secondary" onClick={() => send({ type: "RESET" })}>Reset</Button>
-          </div>
-        )}
+        {(state.phase === "resolved" || state.phase === "escalated" || state.phase === "error") && (() => {
+          const declined = state.phase === "resolved" && session?.resolution_state === "declined_by_user";
+          const tone = state.phase === "error" ? "bad" : state.phase === "escalated" ? "warn" : declined ? "" : "ok";
+          return (
+            <div className="op-in flex min-h-[170px] flex-col items-center justify-center gap-2.5 text-center">
+              <div className="relative grid h-16 w-16 place-items-center">
+                <span className={`absolute -inset-5 rounded-full ${tone ? `op-halo-${tone}` : "op-halo"}`} aria-hidden />
+                <span className={`relative grid h-14 w-14 place-items-center rounded-2xl shadow-lg ring-1 ${
+                  tone === "ok" ? "bg-gradient-to-br from-emerald-400 to-teal-500 text-white ring-emerald-500/30 shadow-emerald-500/30"
+                  : tone === "warn" ? "bg-gradient-to-br from-amber-300 to-orange-500 text-white ring-amber-500/30 shadow-amber-500/30"
+                  : tone === "bad" ? "bg-gradient-to-br from-rose-400 to-red-600 text-white ring-rose-500/30 shadow-rose-500/30"
+                  : "bg-white text-slate-500 ring-slate-900/10"}`}>
+                  {state.phase === "resolved" && !declined && <CheckIcon className="h-8 w-8" />}
+                  {declined && <ShieldIcon className="h-7 w-7" />}
+                  {state.phase === "escalated" && <EscalateIcon className="h-8 w-8" />}
+                  {state.phase === "error" && <AlertIcon className="h-8 w-8" />}
+                </span>
+              </div>
+              <p className="mt-1 text-[15px] font-semibold tracking-[-.01em]">
+                {state.phase === "resolved"
+                  ? declined ? "Fix declined — nothing was changed" : "Fixed and verified"
+                  : state.phase === "escalated"
+                    ? session?.resolution_state === "expired_idle" ? "Expired — nothing was changed" : "Handed to the support team"
+                    : "Something went wrong"}
+              </p>
+              <p className="max-w-[320px] whitespace-pre-line text-[12px] leading-relaxed text-slate-600">{state.message || state.diagnosis?.reasoning || "Done."}</p>
+              <div className="mt-1">
+                <Button variant="secondary" onClick={() => send({ type: "RESET" })}>Reset</Button>
+              </div>
+            </div>
+          );
+        })()}
 
         {(state.phase === "awaiting_approval" || state.phase === "resolved" || state.phase === "escalated") &&
           (session?.additional_issues?.length ?? 0) > 0 && (
-          <div className="mt-3 rounded-md border border-[#e3e8f0] bg-[#f8fafc] p-2" data-testid="other-issues">
-            <p className="text-[11px] font-semibold text-[#334155]">Other problems to report separately</p>
-            <ul className="mt-1 list-disc pl-4 text-[11px] text-[#475569]">
+          <div className="op-in mt-3 rounded-2xl bg-amber-50/70 p-3 ring-1 ring-amber-200/70" data-testid="other-issues">
+            <p className="text-[11px] font-semibold text-amber-900">Other problems to report separately</p>
+            <ul className="mt-1 list-disc pl-4 text-[11px] text-amber-900/80">
               {session!.additional_issues!.slice(0, 5).map((i, n) => <li key={n}>{i.text}</li>)}
             </ul>
-            <p className="mt-1 text-[10px] text-[#64748b]">Operon handles one problem at a time. Ask again for each of these.</p>
+            <p className="mt-1 text-[10px] text-amber-800/70">Operon handles one problem at a time. Ask again for each of these.</p>
           </div>
         )}
 
         {(state.phase === "resolved" || state.phase === "escalated") && recentActivity.length > 0 && (
-          <details className="mt-3 border-t border-[#e3e8f0] pt-2">
-            <summary className="cursor-pointer select-none text-[11px] font-semibold text-[#64748b]">What Operon did</summary>
-            <ol className="mt-2 space-y-1">
+          <details className="mt-3 rounded-2xl bg-white p-3 ring-1 ring-slate-900/[.06]">
+            <summary className="flex cursor-pointer select-none items-center gap-1.5 text-[11px] font-semibold text-slate-600">
+              <ArrowIcon className="op-chevron h-3 w-3 transition-transform" />
+              What Operon did
+            </summary>
+            <ol className="relative mt-2.5 space-y-2 border-l border-slate-200 pl-3">
               {recentActivity.map((a) => (
-                <li key={a.seq} className="flex gap-2 text-[10.5px] leading-snug text-[#475569]">
-                  <span className="w-[92px] shrink-0 font-mono uppercase tracking-wide text-[#94a3b8]">{a.kind.replace(/_/g, " ")}</span>
+                <li key={a.seq} className="relative text-[10.5px] leading-snug text-slate-600">
+                  <span className="absolute -left-[16.5px] top-[3px] h-2 w-2 rounded-full bg-white ring-2 ring-brand" aria-hidden />
+                  <span className="block font-mono text-[9.5px] uppercase tracking-wide text-slate-400">{a.kind.replace(/_/g, " ")}</span>
                   <span className="line-clamp-2">{a.summary}</span>
                 </li>
               ))}
@@ -382,8 +493,9 @@ export function App() {
       </main>
 
       {session && (
-        <footer className="border-t border-[#e3e8f0] bg-[#f5f7fb] px-4 py-2 font-mono text-[10px] text-[#64748b]">
-          session {session.session_id.slice(0, 8)} · {session.phase}
+        <footer className="flex items-center justify-between border-t border-slate-900/[.06] bg-white/60 px-4 py-2 font-mono text-[10px] text-slate-400">
+          <span>session {session.session_id.slice(0, 8)} · {session.phase}</span>
+          <span className="flex items-center gap-1 font-sans font-medium"><ShieldIcon className="h-3 w-3" />Evidence redacted</span>
         </footer>
       )}
     </div>

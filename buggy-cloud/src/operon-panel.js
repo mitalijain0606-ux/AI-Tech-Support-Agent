@@ -23,6 +23,29 @@ const SESSION_KEY = "operon.session.nexadesk"; // the session id only — never 
 const DEFAULT_ISSUE = "Something is wrong on this page.";
 const SUGGESTIONS = ["Dates are missing and an error banner appears", "The project list never loads", "Project search is unavailable", "I'm shown as signed out"];
 
+// Operon's mark (an orbit around a core), built as static SVG nodes — no markup parsing.
+const SVG_NS = "http://www.w3.org/2000/svg";
+function logoMark() {
+  const node = (tag, attrs) => {
+    const n = document.createElementNS(SVG_NS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    return n;
+  };
+  const svg = node("svg", { viewBox: "0 0 32 32", fill: "none", "aria-hidden": "true" });
+  const grad = node("linearGradient", { id: "op-mark-grad", x1: "4", y1: "4", x2: "28", y2: "28", gradientUnits: "userSpaceOnUse" });
+  grad.append(node("stop", { "stop-color": "#a5b4fc" }), node("stop", { offset: "0.55", "stop-color": "#8b5cf6" }), node("stop", { offset: "1", "stop-color": "#22d3ee" }));
+  const defs = node("defs", {});
+  defs.append(grad);
+  svg.append(
+    defs,
+    node("circle", { cx: "16", cy: "16", r: "10.5", stroke: "url(#op-mark-grad)", "stroke-width": "2.6" }),
+    node("ellipse", { cx: "16", cy: "16", rx: "14", ry: "5.2", transform: "rotate(-32 16 16)", stroke: "#fff", "stroke-opacity": ".55", "stroke-width": "1.2" }),
+    node("circle", { cx: "16", cy: "16", r: "3.4", fill: "#fff" }),
+    node("circle", { cx: "27.4", cy: "9.2", r: "1.7", fill: "#22d3ee" }),
+  );
+  return svg;
+}
+
 const el = (tag, props = {}, ...kids) => {
   const node = Object.assign(document.createElement(tag), props);
   node.append(...kids.filter((k) => k !== null && k !== undefined && k !== false));
@@ -114,9 +137,9 @@ export async function mountOperon({ root, reobserve }) {
   const dev = el("details", { id: "operon-dev", className: "op-dev" }, el("summary", { textContent: "Developer details" }), devInfo);
   const body = el("div", { className: "op-body" }, intro, el("div", { className: "op-status-row" }, pill, status), steps, detail, answerForm, el("div", { className: "op-actions" }, cont, retry, fresh), dev);
   const panel = el("section", { id: "operon-panel", className: "op-panel", "aria-label": "Operon support assistant" },
-    el("header", { className: "op-head" }, el("span", { className: "op-logo", textContent: "O" }), el("div", { className: "op-titles" }, el("h2", { textContent: "Operon Support" }), el("span", { className: "op-sub", textContent: "AI troubleshooting for NexaDesk" })), minimize),
+    el("header", { className: "op-head" }, el("span", { className: "op-logo" }, logoMark()), el("div", { className: "op-titles" }, el("h2", { textContent: "Operon Support" }), el("span", { className: "op-sub", textContent: "AI troubleshooting for NexaDesk" })), minimize),
     body, decision);
-  const launcher = el("button", { type: "button", id: "operon-launcher", className: "op-launcher", hidden: true }, el("span", { className: "op-logo", textContent: "O" }), "Need help?");
+  const launcher = el("button", { type: "button", id: "operon-launcher", className: "op-launcher", hidden: true }, el("span", { className: "op-logo" }, logoMark()), "Need help?");
   document.body.append(panel, launcher);
   document.body.classList.add("operon-docked");
 
