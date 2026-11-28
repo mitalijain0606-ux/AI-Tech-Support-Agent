@@ -24,17 +24,34 @@ const bugOf = (url) => Number(url.searchParams.get("bug") || 0);
  * a ready-made Operon token at /operon-config.json. A real site mints a short-lived token in its
  * own backend and never puts a long-lived key in a page.
  */
-export async function startBuggyCloud({ port = 0, host = "127.0.0.1", operon = null } = {}) {
-  let reportsOrigin = "";
-  let appOrigin = "";
-
-  const reportsServer = createServer((req, res) => {
+/** The "reports" API, which must live on a different origin from the app (bug 6 is a CORS fault). */
+function reportsHandler(getAppOrigin) {
+  return (req, res) => {
     const url = new URL(req.url, "http://x");
+    if (url.pathname === "/health") return json(res, 200, { status: "ok" });
     if (url.pathname !== "/api/reports") return json(res, 404, { error: "not found" });
     // Bug 6: no Access-Control-Allow-Origin, so the browser blocks the response.
-    const cors = bugOf(url) === 6 ? {} : { "access-control-allow-origin": appOrigin };
+    const cors = bugOf(url) === 6 ? {} : { "access-control-allow-origin": getAppOrigin() };
     json(res, 200, { reports: REPORTS }, cors);
-  });
+  };
+}
+
+/** Hosted mode: the reports API alone, as its own service (it needs its own origin). */
+export async function startReportsApi({ port = 0, host = "127.0.0.1", appOrigin }) {
+  const server = createServer(reportsHandler(() => appOrigin));
+  await new Promise((r) => server.listen(port, host, r));
+  return { url: `http://${host}:${server.address().port}`, close: () => new Promise((r) => server.close(r)) };
+}
+
+/**
+ * `reportsUrl` (hosted mode): the public origin of a separately running reports API; when it is
+ * set, no local reports server is started.
+ */
+export async function startBuggyCloud({ port = 0, host = "127.0.0.1", operon = null, reportsUrl = null } = {}) {
+  let reportsOrigin = reportsUrl ?? "";
+  let appOrigin = "";
+
+  const reportsServer = reportsUrl ? null : createServer(reportsHandler(() => appOrigin));
 
   const appServer = createServer(async (req, res) => {
     const url = new URL(req.url, "http://x");
@@ -47,6 +64,7 @@ export async function startBuggyCloud({ port = 0, host = "127.0.0.1", operon = n
       res.writeHead(204, { "cache-control": "no-store" });
       return res.end();
     }
+    if (url.pathname === "/health") return json(res, 200, { status: "ok" });
     if (url.pathname === "/api/me") return bug === 5 ? json(res, 401, { error: "session expired" }) : json(res, 200, ACCOUNT);
 
     const file =
@@ -69,18 +87,59 @@ export async function startBuggyCloud({ port = 0, host = "127.0.0.1", operon = n
     }
   });
 
-  await new Promise((r) => reportsServer.listen(port ? port + 1 : 0, host, r));
-  reportsOrigin = `http://${host}:${reportsServer.address().port}`;
+  if (reportsServer) {
+    await new Promise((r) => reportsServer.listen(port ? port + 1 : 0, host, r));
+    reportsOrigin = `http://${host}:${reportsServer.address().port}`;
+  }
   await new Promise((r) => appServer.listen(port, host, r));
   appOrigin = `http://${host}:${appServer.address().port}`;
   return {
     url: appOrigin,
     reportsUrl: reportsOrigin,
-    close: () => Promise.all([new Promise((r) => appServer.close(r)), new Promise((r) => reportsServer.close(r))]),
+    close: () => Promise.all([new Promise((r) => appServer.close(r)), reportsServer && new Promise((r) => reportsServer.close(r))]),
   };
 }
 
+/**
+ * Hosted mode (Render sets PORT). Two services run this file:
+ *   NEXADESK_MODE=reports  APP_ORIGIN=https://<nexadesk host>          → the reports API only
+ *   (default)              REPORTS_API_URL=https://<reports host>      → the app
+ *                          OPERON_BACKEND_URL + OPERON_DEMO_TOKEN      → optional: shows the support widget.
+ * The demo token is handed to every visitor, so use a short-lived user key of a demo-only tenant.
+ */
+export function hostedConfig(env) {
+  const origin = (name) => {
+    const raw = env[name];
+    if (!raw) return null;
+    const u = new URL(raw);
+    if (u.protocol !== "https:" && u.hostname !== "localhost" && u.hostname !== "127.0.0.1") throw new Error(`${name} must be https`);
+    return u.origin;
+  };
+  const port = Number(env.PORT);
+  if (env.NEXADESK_MODE === "reports") {
+    const appOrigin = origin("APP_ORIGIN");
+    if (!appOrigin) throw new Error("APP_ORIGIN is required for the reports API");
+    return { mode: "reports", port, appOrigin };
+  }
+  const reportsUrl = origin("REPORTS_API_URL");
+  if (!reportsUrl) throw new Error("REPORTS_API_URL is required in hosted mode");
+  const backendUrl = origin("OPERON_BACKEND_URL");
+  const token = env.OPERON_DEMO_TOKEN || null;
+  return { mode: "app", port, reportsUrl, operon: backendUrl && token ? { backendUrl, token } : null };
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const app = await startBuggyCloud({ port: Number(process.argv[2] ?? 4300) });
-  console.log(`Buggy Cloud on ${app.url}  (add ?bug=1..7)   reports API on ${app.reportsUrl}`);
+  if (process.env.PORT) {
+    const cfg = hostedConfig(process.env);
+    if (cfg.mode === "reports") {
+      await startReportsApi({ port: cfg.port, host: "0.0.0.0", appOrigin: cfg.appOrigin });
+      console.log(`NexaDesk reports API on :${cfg.port} (CORS for ${cfg.appOrigin})`);
+    } else {
+      await startBuggyCloud({ port: cfg.port, host: "0.0.0.0", reportsUrl: cfg.reportsUrl, operon: cfg.operon });
+      console.log(`NexaDesk on :${cfg.port} · reports API ${cfg.reportsUrl} · support widget ${cfg.operon ? `→ ${cfg.operon.backendUrl}` : "off"}`);
+    }
+  } else {
+    const app = await startBuggyCloud({ port: Number(process.argv[2] ?? 4300) });
+    console.log(`Buggy Cloud on ${app.url}  (add ?bug=1..7)   reports API on ${app.reportsUrl}`);
+  }
 }

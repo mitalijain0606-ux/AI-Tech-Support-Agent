@@ -1,6 +1,6 @@
 # Deployment
 
-**Status: nothing has been deployed.** The configuration here (`render.yaml`,
+**Status: nothing has been deployed yet.** The configuration here (`render.yaml`,
 the CI workflow, the migrations) is written and has been exercised locally,
 but no Render service, Neon database or GitHub Actions run exists yet. Every
 step that creates something on an external service is a manual step below.
@@ -91,6 +91,25 @@ the Render dashboard and never committed.
    backend origin into the manifest's `host_permissions` (no CORS needed).
 5. Open the popup → *Backend access* → paste the token.
 6. **Verify the deployment** with `docs/DEMO_REHEARSAL.md`.
+
+## Hosting the NexaDesk demo (optional, same blueprint)
+
+The blueprint also creates `nexadesk` (the demo app) and `nexadesk-reports` (its second-origin
+reports API, needed for scenario 6). Both are stateless Node services on the free plan.
+
+1. After the first blueprint sync, note the three `https://….onrender.com` URLs.
+2. Create a short-lived demo key in the backend's Render shell, in its own tenant:
+   `python scripts/manage_keys.py create --tenant nexadesk-demo --subject visitor --role user --expires-days 7`.
+   NexaDesk hands this token to every visitor, so never use a real user's key or an admin key.
+3. Set the environment values (Render dashboard → service → Environment):
+   - `operon-backend`: `CORS_ALLOW_ORIGINS` = the NexaDesk URL.
+   - `nexadesk`: `REPORTS_API_URL` = the reports URL, `OPERON_BACKEND_URL` = the backend URL,
+     `OPERON_DEMO_TOKEN` = the demo key from step 2.
+   - `nexadesk-reports`: `APP_ORIGIN` = the NexaDesk URL.
+4. Build the extension for the hosted app:
+   `cd extension && OPERON_TARGET_ORIGIN=https://<nexadesk host> OPERON_BACKEND_URL=https://<backend host> npm run build -- nexadesk`,
+   then load `extension/dist/nexadesk/` unpacked and paste a user key (not the demo key) into the popup.
+5. Open `https://<nexadesk host>/demo` for the presenter console.
 
 ## Verified vs. not verified
 

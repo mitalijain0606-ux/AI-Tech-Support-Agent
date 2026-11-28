@@ -20,6 +20,22 @@ if (!existsSync(targetConfigPath)) {
 }
 
 const targetConfig = JSON.parse(readFileSync(targetConfigPath, "utf-8"));
+// A hosted target's address is only known after deploying: "match_from_env" names the env var
+// that holds its https origin (e.g. OPERON_TARGET_ORIGIN=https://nexadesk.onrender.com).
+if (targetConfig.match_from_env) {
+  const raw = process.env[targetConfig.match_from_env];
+  let origin;
+  try {
+    const u = new URL(raw ?? "");
+    if (u.protocol !== "https:") throw new Error("must be https");
+    origin = u.origin;
+  } catch (err) {
+    console.error(`Target "${target}" needs ${targetConfig.match_from_env}=https://<host> (${err.message})`);
+    process.exit(1);
+  }
+  targetConfig.match = `${origin}/*`;
+  targetConfig.domain = new URL(origin).hostname;
+}
 if (!targetConfig.match) {
   console.error(
     `Target "${target}" has no "match" configured yet (targets/${target}.json) — not ready to build.`,

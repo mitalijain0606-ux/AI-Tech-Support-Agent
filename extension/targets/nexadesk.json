@@ -1,0 +1,5 @@
+{
+  "domain": "hosted NexaDesk",
+  "match_from_env": "OPERON_TARGET_ORIGIN",
+  "note": "The deployed NexaDesk demo. Build with OPERON_TARGET_ORIGIN=https://<nexadesk host> OPERON_BACKEND_URL=https://<backend host> npm run build -- nexadesk"
+}

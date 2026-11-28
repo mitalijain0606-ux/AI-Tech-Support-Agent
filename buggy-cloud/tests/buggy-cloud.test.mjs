@@ -7,7 +7,7 @@ import { activeBug, ensureStaleWorker, resetScenario, seedBug, wantsReset } from
 import { createApi } from "../src/api.js";
 import { BUGS, PREFS_KEY, SETTINGS_KEY, bugById } from "../src/bugs.js";
 import { DEFAULT_PREFS, RESETTABLE, formatDate, formatMoney, loadPrefs, resetPreference } from "../src/prefs.js";
-import { startBuggyCloud } from "../server.mjs";
+import { hostedConfig, startBuggyCloud, startReportsApi } from "../server.mjs";
 
 const memory = () => {
   const m = new Map();
@@ -229,4 +229,39 @@ test("the outcome log keeps ids and outcomes only, bounded", async () => {
   assert.deepEqual(Object.keys(log[0]).sort(), ["at", "bug", "session", "state", "ticket"]);
   s.setItem("nexadesk_operon_outcomes", "{broken");
   assert.deepEqual(readOutcomes(s), []);
+});
+
+test("hosted mode: the app uses an external reports API and serves the widget config only when both values are set", async () => {
+  const app = await startBuggyCloud({ reportsUrl: "https://reports.example" });
+  try {
+    const html = await (await fetch(`${app.url}/`)).text();
+    assert.match(html, /content="https:\/\/reports\.example"/);
+    assert.equal(app.reportsUrl, "https://reports.example");
+    assert.equal((await fetch(`${app.url}/health`)).status, 200);
+    assert.equal((await fetch(`${app.url}/operon-config.json`)).status, 204);
+  } finally {
+    await app.close();
+  }
+  const base = { PORT: "10000", REPORTS_API_URL: "https://r.example/" };
+  assert.deepEqual(hostedConfig(base), { mode: "app", port: 10000, reportsUrl: "https://r.example", operon: null });
+  assert.equal(hostedConfig({ ...base, OPERON_BACKEND_URL: "https://api.example" }).operon, null, "no token → no widget");
+  assert.deepEqual(hostedConfig({ ...base, OPERON_BACKEND_URL: "https://api.example/", OPERON_DEMO_TOKEN: "t" }).operon, { backendUrl: "https://api.example", token: "t" });
+  assert.throws(() => hostedConfig({ PORT: "1" }), /REPORTS_API_URL/);
+  assert.throws(() => hostedConfig({ ...base, OPERON_BACKEND_URL: "http://api.example" }), /https/);
+  assert.throws(() => hostedConfig({ PORT: "1", NEXADESK_MODE: "reports" }), /APP_ORIGIN/);
+});
+
+test("hosted mode: the standalone reports API keeps bug 6's missing CORS header", async () => {
+  assert.deepEqual(hostedConfig({ PORT: "2", NEXADESK_MODE: "reports", APP_ORIGIN: "https://app.example/x" }), { mode: "reports", port: 2, appOrigin: "https://app.example" });
+  const api = await startReportsApi({ appOrigin: "https://app.example" });
+  try {
+    const ok = await fetch(`${api.url}/api/reports`);
+    assert.equal(ok.headers.get("access-control-allow-origin"), "https://app.example");
+    assert.ok((await ok.json()).reports.length > 0);
+    const broken = await fetch(`${api.url}/api/reports?bug=6`);
+    assert.equal(broken.headers.get("access-control-allow-origin"), null);
+    assert.equal((await fetch(`${api.url}/health`)).status, 200);
+  } finally {
+    await api.close();
+  }
 });

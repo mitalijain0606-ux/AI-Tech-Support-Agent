@@ -1,4 +1,4 @@
-# Render blueprint for the Operon backend.  https://render.com/docs/blueprint-spec
+# Render blueprint: the Operon backend, plus the NexaDesk demo app.  https://render.com/docs/blueprint-spec
 #
 # Why Render (a long-lived web service) and not a serverless platform: the API
 # keeps Server-Sent-Events connections open for minutes, holds an in-process
@@ -42,4 +42,42 @@ services:
       - key: GROQ_API_KEY
         sync: false
       - key: REDIS_URL                # Upstash / Render Key Value; needed once there is more than one instance
+        sync: false
+      - key: CORS_ALLOW_ORIGINS       # the NexaDesk URL (exact https origin), so its support widget may call the API
+        sync: false
+
+  # NexaDesk, the demo app with 8 reproducible bugs, and its "reports" API. The reports API
+  # must be a different origin from the app (scenario 6 is a cross-origin CORS fault), so it is
+  # its own service. Both are stateless; free instances are fine (first load after idle is slow).
+  - type: web
+    name: nexadesk
+    runtime: node
+    plan: free
+    region: oregon
+    healthCheckPath: /health
+    buildCommand: node --version
+    startCommand: node buggy-cloud/server.mjs
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: REPORTS_API_URL          # https URL of the nexadesk-reports service
+        sync: false
+      - key: OPERON_BACKEND_URL       # https URL of operon-backend; with the token, shows the support widget
+        sync: false
+      - key: OPERON_DEMO_TOKEN        # handed to every visitor: a user key of a demo-only tenant, with an expiry
+        sync: false
+  - type: web
+    name: nexadesk-reports
+    runtime: node
+    plan: free
+    region: oregon
+    healthCheckPath: /health
+    buildCommand: node --version
+    startCommand: node buggy-cloud/server.mjs
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NEXADESK_MODE
+        value: reports
+      - key: APP_ORIGIN               # https URL of the nexadesk service (CORS for its reports request)
         sync: false
