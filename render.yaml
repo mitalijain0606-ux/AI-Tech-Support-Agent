@@ -13,7 +13,7 @@ services:
     runtime: python
     rootDir: backend
     plan: starter            # free instances sleep and have ephemeral state; fine for a demo only
-    region: oregon
+    region: singapore
     healthCheckPath: /health
     buildCommand: >-
       pip install --require-hashes -r requirements.txt &&
@@ -53,7 +53,7 @@ services:
     name: nexadesk
     runtime: node
     plan: free
-    region: oregon
+    region: singapore
     healthCheckPath: /health
     buildCommand: node --version
     startCommand: node buggy-cloud/server.mjs
@@ -70,7 +70,7 @@ services:
     name: nexadesk-reports
     runtime: node
     plan: free
-    region: oregon
+    region: singapore
     healthCheckPath: /health
     buildCommand: node --version
     startCommand: node buggy-cloud/server.mjs
