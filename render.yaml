@@ -12,7 +12,7 @@ services:
     name: operon-backend
     runtime: python
     rootDir: backend
-    plan: starter            # free instances sleep and have ephemeral state; fine for a demo only
+    plan: free               # free instances sleep after 15 idle minutes (first request then takes about a minute)
     region: singapore
     healthCheckPath: /health
     buildCommand: >-
